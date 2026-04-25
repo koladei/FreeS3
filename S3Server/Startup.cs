@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using CradleSoft.DMS.Data;
 
-namespace API
+namespace S3Server
 {
   public class Startup
   {

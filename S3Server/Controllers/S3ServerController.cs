@@ -4,10 +4,10 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.StaticFiles;
 
-namespace CradleSoft.DMS.API.Controllers;
+namespace CradleSoft.DMS.S3Server.Controllers;
 
 /// <summary>
-/// A minimal S3-compatible HTTP API emulator.
+/// A minimal S3-compatible HTTP S3Server emulator.
 /// Supports path-style access: /{bucketName}/{*key}
 ///
 /// Compatible operations:
@@ -17,12 +17,12 @@ namespace CradleSoft.DMS.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("s3/{bucketName}/{**key}")]
-public class S3EmulatorController : ControllerBase
+public class S3ServerController : ControllerBase
 {
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
     private readonly IStorageService _storage;
 
-    public S3EmulatorController(IStorageService storage)
+    public S3ServerController(IStorageService storage)
     {
         _storage = storage;
     }

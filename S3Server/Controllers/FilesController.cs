@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.StaticFiles;
 using CradleSoft.DMS.Services;
 
-namespace CradleSoft.DMS.API.Controllers;
+namespace CradleSoft.DMS.S3Server.Controllers;
 
 /// <summary>
 /// Convenience multipart-form controller for uploading/downloading files

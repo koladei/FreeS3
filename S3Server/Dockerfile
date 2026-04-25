@@ -15,22 +15,22 @@ RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 # Copy project files and restore dependencies
-COPY ["API/API.csproj", "API/"]
-COPY ["Data/Data.csproj", "Data/"]
-COPY ["Models/Models.csproj", "Models/"]
-COPY ["Services/Services.csproj", "Services/"]
-RUN dotnet restore "API/API.csproj"
+COPY ["S3Server/S3Server.csproj", "S3Server/"]
+COPY ["Common/Data/Data.csproj", "Data/"]
+COPY ["Common/Models/Models.csproj", "Models/"]
+COPY ["Common/Services/Services.csproj", "Services/"]
+RUN dotnet restore "S3Server/S3Server.csproj"
 
 # Copy the remaining source code
 COPY . .
-WORKDIR "/src/API"
-RUN dotnet build "API.csproj" -c Release -o /app/build
+WORKDIR "/src/S3Server"
+RUN dotnet build "S3Server.csproj" -c Release -o /app/build
 
 FROM build AS publish
-RUN dotnet publish "API.csproj" -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "S3Server.csproj" -c Release -o /app/publish /p:UseAppHost=false
 COPY --from=client-build /client/dist /app/publish/wwwroot
 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "API.dll"]
+ENTRYPOINT ["dotnet", "S3Server.dll"]

@@ -11,10 +11,10 @@ using System.IdentityModel.Tokens.Jwt;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 
-namespace API.Controllers;
+namespace S3Server.Controllers;
 
 [ApiController]
-// [Route("api/[controller]")]
+// [Route("S3Server/[controller]")]
 [Route("sch")]
 public class AuthenticationController : ControllerBase
 {

@@ -3,10 +3,10 @@ using CradleSoft.DMS.Services;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace CradleSoft.DMS.API.Controllers;
+namespace CradleSoft.DMS.S3Server.Controllers;
 
 [ApiController]
-[Route("api/[controller]")]
+[Route("S3Server/[controller]")]
 public class BucketsController : ControllerBase
 {
     private readonly IStorageService _storage;
