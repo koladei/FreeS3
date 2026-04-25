@@ -17,9 +17,12 @@ import {
   ChevronRight,
   Shield,
   Code,
-  Check
+  Check,
+  FileText,
+  FilePlus,
 } from 'lucide-react';
 import { storageApi } from './api';
+import ContractManagerModal from './ContractManagerModal';
 
 const POLICY_PRESETS = {
   private: {
@@ -49,6 +52,9 @@ const App = () => {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [previewObject, setPreviewObject] = useState(null);
+  // map of objectKey → contractTemplate (populated on upload or manual register)
+  const [contractTemplates, setContractTemplates] = useState({});
+  const [contractTarget, setContractTarget] = useState(null);
 
   const fetchBuckets = async () => {
     try {
@@ -145,18 +151,48 @@ const App = () => {
     }
   };
 
+  const isPdfObject = (obj) =>
+    obj.contentType === 'application/pdf' || obj.key.toLowerCase().endsWith('.pdf');
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !selectedBucket) return;
 
     setUploadProgress(0);
     try {
-      await storageApi.uploadObject(selectedBucket, file.name, file);
+      const result = await storageApi.uploadDocument(selectedBucket, file.name, file);
+      if (result.contractTemplate) {
+        setContractTemplates((prev) => ({
+          ...prev,
+          [file.name]: result.contractTemplate,
+        }));
+      }
       fetchObjects(selectedBucket);
     } catch (error) {
       alert('Upload failed');
     } finally {
       setUploadProgress(null);
+    }
+  };
+
+  const handleRegisterContract = async (obj) => {
+    try {
+      const res = await storageApi.registerPdfAsContract(selectedBucket, obj.key, obj.key, {
+        title: obj.key,
+      });
+      setContractTemplates((prev) => ({ ...prev, [obj.key]: res.data }));
+      setContractTarget(res.data);
+    } catch (err) {
+      alert(err.response?.data || 'Failed to register contract template.');
+    }
+  };
+
+  const openContractManager = (obj) => {
+    const tpl = contractTemplates[obj.key];
+    if (tpl) {
+      setContractTarget(tpl);
+    } else {
+      handleRegisterContract(obj);
     }
   };
 
@@ -382,6 +418,21 @@ const App = () => {
                               >
                                 <Eye className="w-4.5 h-4.5" />
                               </button>
+                              {isPdfObject(obj) && (
+                                <button
+                                  onClick={() => openContractManager(obj)}
+                                  className={`p-2 rounded-lg transition-all ${
+                                    contractTemplates[obj.key]
+                                      ? 'hover:bg-blue-500/10 hover:text-blue-400 text-blue-500'
+                                      : 'hover:bg-slate-500/10 hover:text-slate-300 text-slate-500'
+                                  }`}
+                                  title={contractTemplates[obj.key] ? 'Manage Contract' : 'Register as Contract'}
+                                >
+                                  {contractTemplates[obj.key]
+                                    ? <FileText className="w-4.5 h-4.5" />
+                                    : <FilePlus className="w-4.5 h-4.5" />}
+                                </button>
+                              )}
                               <button
                                 onClick={() => handleDeleteObject(obj.key)}
                                 className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
@@ -500,6 +551,14 @@ const App = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Contract Manager Modal */}
+      {contractTarget && (
+        <ContractManagerModal
+          template={contractTarget}
+          onClose={() => setContractTarget(null)}
+        />
       )}
 
       {/* Preview Modal */}
