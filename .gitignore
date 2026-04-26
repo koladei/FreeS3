@@ -48,3 +48,6 @@ API/App_Data/s3-emulator/
 
 # Docker
 .dockerignore
+App_Storage/App_Data
+App_Storage/App_Data/*
+
