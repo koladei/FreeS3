@@ -14,5 +14,130 @@ namespace CradleSoft.DMS.Data
     public DbSet<RefreshToken> RefreshTokens { get; set; }
 
     public DbSet<AccessToken> RevokedAccessTokens { get; set; }
+
+    public DbSet<ContractTemplate> ContractTemplates { get; set; }
+
+    public DbSet<ContractPlaceholder> ContractPlaceholders { get; set; }
+
+    public DbSet<ContractInstance> ContractInstances { get; set; }
+
+    public DbSet<ContractSigner> ContractSigners { get; set; }
+
+    public DbSet<ContractFieldValue> ContractFieldValues { get; set; }
+
+    public DbSet<StorageBucket> StorageBuckets { get; set; }
+
+    public DbSet<StorageObject> StorageObjects { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+      base.OnModelCreating(builder);
+
+      builder.Entity<ContractTemplate>(entity =>
+      {
+        entity.HasKey(x => x.TemplateId);
+        entity.Property(x => x.TemplateId).HasMaxLength(64);
+        entity.Property(x => x.Bucket).HasMaxLength(255).IsRequired();
+        entity.Property(x => x.ObjectKey).HasMaxLength(1024).IsRequired();
+        entity.Property(x => x.FileName).HasMaxLength(512).IsRequired();
+        entity.Property(x => x.ContentType).HasMaxLength(128);
+        entity.Property(x => x.Title).HasMaxLength(512);
+        entity.Property(x => x.AuthorId).HasMaxLength(128);
+        entity.Property(x => x.Status).HasMaxLength(64).IsRequired();
+      });
+
+      builder.Entity<ContractPlaceholder>(entity =>
+      {
+        entity.HasKey(x => x.PlaceholderId);
+        entity.Property(x => x.PlaceholderId).HasMaxLength(64);
+        entity.Property(x => x.TemplateId).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.FieldType).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.Role).HasMaxLength(128).IsRequired();
+        entity.Property(x => x.Label).HasMaxLength(256);
+        entity.Property(x => x.X).HasPrecision(18, 4);
+        entity.Property(x => x.Y).HasPrecision(18, 4);
+        entity.Property(x => x.Width).HasPrecision(18, 4);
+        entity.Property(x => x.Height).HasPrecision(18, 4);
+
+        entity.HasOne(x => x.Template)
+          .WithMany(x => x.Placeholders)
+          .HasForeignKey(x => x.TemplateId)
+          .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasIndex(x => new { x.TemplateId, x.Order });
+      });
+
+      builder.Entity<ContractInstance>(entity =>
+      {
+        entity.HasKey(x => x.InstanceId);
+        entity.Property(x => x.InstanceId).HasMaxLength(64);
+        entity.Property(x => x.TemplateId).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.Name).HasMaxLength(512);
+        entity.Property(x => x.Status).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.FinalArtifactHash).HasMaxLength(256);
+
+        entity.HasOne(x => x.Template)
+          .WithMany(x => x.Instances)
+          .HasForeignKey(x => x.TemplateId)
+          .OnDelete(DeleteBehavior.Restrict);
+      });
+
+      builder.Entity<ContractSigner>(entity =>
+      {
+        entity.HasKey(x => x.Id);
+        entity.Property(x => x.InstanceId).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.SignerId).HasMaxLength(128).IsRequired();
+        entity.Property(x => x.Role).HasMaxLength(128).IsRequired();
+        entity.Property(x => x.DisplayName).HasMaxLength(256).IsRequired();
+        entity.Property(x => x.Email).HasMaxLength(256);
+
+        entity.HasOne(x => x.Instance)
+          .WithMany(x => x.Signers)
+          .HasForeignKey(x => x.InstanceId)
+          .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasIndex(x => new { x.InstanceId, x.SignerId }).IsUnique();
+      });
+
+      builder.Entity<ContractFieldValue>(entity =>
+      {
+        entity.HasKey(x => x.Id);
+        entity.Property(x => x.InstanceId).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.PlaceholderId).HasMaxLength(64).IsRequired();
+        entity.Property(x => x.SignerId).HasMaxLength(128).IsRequired();
+        entity.Property(x => x.SourceIp).HasMaxLength(64);
+
+        entity.HasOne(x => x.Instance)
+          .WithMany(x => x.FieldValues)
+          .HasForeignKey(x => x.InstanceId)
+          .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasIndex(x => new { x.InstanceId, x.PlaceholderId, x.SignerId }).IsUnique();
+      });
+
+      builder.Entity<StorageBucket>(entity =>
+      {
+        entity.HasKey(x => x.BucketName);
+        entity.Property(x => x.BucketName).HasMaxLength(255);
+        entity.Property(x => x.PolicyJson);
+        entity.Property(x => x.ObjectCount).HasDefaultValue(0L);
+        entity.Property(x => x.TotalSizeBytes).HasDefaultValue(0L);
+      });
+
+      builder.Entity<StorageObject>(entity =>
+      {
+        entity.HasKey(x => x.Id);
+        entity.Property(x => x.BucketName).HasMaxLength(255).IsRequired();
+        entity.Property(x => x.ObjectKey).HasMaxLength(1024).IsRequired();
+        entity.Property(x => x.ContentType).HasMaxLength(255).IsRequired();
+
+        entity.HasIndex(x => new { x.BucketName, x.ObjectKey }).IsUnique();
+
+        entity.HasOne(x => x.Bucket)
+          .WithMany(x => x.Objects)
+          .HasForeignKey(x => x.BucketName)
+          .OnDelete(DeleteBehavior.Cascade);
+      });
+    }
   }
 }

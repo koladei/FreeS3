@@ -51,3 +51,4 @@ API/App_Data/s3-emulator/
 App_Storage/App_Data
 App_Storage/App_Data/*
 
+Common/Data/Migrations
