@@ -3,6 +3,7 @@ using CradleSoft.DMS.Services;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.StaticFiles;
+using System.Security.Claims;
 
 namespace CradleSoft.DMS.App_Storage.Controllers;
 
@@ -17,6 +18,7 @@ namespace CradleSoft.DMS.App_Storage.Controllers;
 /// </summary>
 [ApiController]
 [Route("s3/{bucketName}/{**key}")]
+[Authorize]
 public class ObjectsController : ControllerBase
 {
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
@@ -27,20 +29,33 @@ public class ObjectsController : ControllerBase
         _storage = storage;
     }
 
+    private string GetUserId()
+    {
+        return User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+            ?? throw new InvalidOperationException("User ID not found in claims.");
+    }
+
     /// <summary>
     /// PUT /{bucketName}/{key} - Stores an object. Reads the raw request body, just like S3.
     /// Returns an ETag header (MD5 of the body) which the AWS SDK uses to confirm the upload.
     /// </summary>
     [HttpPut]
     [DisableRequestSizeLimit]
-    [AllowAnonymous]
     public async Task<IActionResult> PutObject(string bucketName, string key)
     {
+        var userId = GetUserId();
+        
+        // Check if user owns the bucket
+        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        {
+            return Forbid();
+        }
+
         using var memoryStream = new MemoryStream();
         await Request.Body.CopyToAsync(memoryStream);
         memoryStream.Position = 0;
 
-        await _storage.UploadObjectAsync(bucketName, key, memoryStream, 
+        await _storage.UploadObjectAsync(userId, bucketName, key, memoryStream, 
             Request.ContentType ?? "application/octet-stream");
 
         // Compute MD5 ETag — required for AWS SDK compatibility
@@ -62,9 +77,17 @@ public class ObjectsController : ControllerBase
             return NotFound(S3ErrorXml("NoSuchKey", "The specified key does not exist.", key ?? string.Empty));
         }
 
+        var userId = GetUserId();
+        
+        // Check if user owns the bucket
+        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        {
+            return Forbid();
+        }
+
         try
         {
-            var stream = await _storage.GetObjectAsync(bucketName, key);
+            var stream = await _storage.GetObjectAsync(userId, bucketName, key);
             var contentType = GetContentType(key);
             return File(stream, contentType, enableRangeProcessing: true);
         }
@@ -85,7 +108,15 @@ public class ObjectsController : ControllerBase
             return NotFound();
         }
 
-        var exists = await _storage.ObjectExistsAsync(bucketName, key);
+        var userId = GetUserId();
+        
+        // Check if user owns the bucket
+        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        {
+            return Forbid();
+        }
+
+        var exists = await _storage.ObjectExistsAsync(userId, bucketName, key);
         return exists ? Ok() : NotFound();
     }
 

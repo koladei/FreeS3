@@ -122,6 +122,13 @@ namespace CradleSoft.DMS.Data
         entity.Property(x => x.PolicyJson);
         entity.Property(x => x.ObjectCount).HasDefaultValue(0L);
         entity.Property(x => x.TotalSizeBytes).HasDefaultValue(0L);
+
+        entity.HasOne(x => x.Owner)
+          .WithMany()
+          .HasForeignKey(x => x.OwnerId)
+          .OnDelete(DeleteBehavior.SetNull);
+
+        entity.HasIndex(x => x.OwnerId);
       });
 
       builder.Entity<StorageObject>(entity =>

@@ -12,7 +12,7 @@ namespace CradleSoft.DMS.Services;
 
 /// <summary>
 /// Implements IStorageService using the local file system as the backing store.
-/// Files are organized as: {StorageRoot}/{bucketName}/{key}
+/// Files are organized as: {StorageRoot}/{userId}/{bucketName}/{key}
 /// This mimics the path-style layout used by MinIO and S3.
 /// </summary>
 public class LocalDiskStorageService : IStorageService
@@ -33,18 +33,23 @@ public class LocalDiskStorageService : IStorageService
         _dbContext = dbContext;
     }
 
-    public Task EnsureBucketExistsAsync(string bucketName)
+    public Task EnsureBucketExistsAsync(string bucketName, string? ownerId = null)
     {
-        var bucketPath = GetBucketPath(bucketName);
+        if (ownerId == null)
+        {
+            throw new ArgumentNullException(nameof(ownerId), "Owner ID is required to create a bucket.");
+        }
+        
+        var bucketPath = GetBucketPath(ownerId, bucketName);
         Directory.CreateDirectory(bucketPath);
-        return EnsureBucketMetadataAsync(bucketName);
+        return EnsureBucketMetadataAsync(bucketName, ownerId: ownerId);
     }
 
-    public async Task UploadObjectAsync(string bucketName, string key, Stream data, string contentType)
+    public async Task UploadObjectAsync(string userId, string bucketName, string key, Stream data, string contentType)
     {
-        await EnsureBucketExistsAsync(bucketName);
+        await EnsureBucketExistsAsync(bucketName, userId);
 
-        var filePath = GetObjectPath(bucketName, key);
+        var filePath = GetObjectPath(userId, bucketName, key);
         var directory = Path.GetDirectoryName(filePath)!;
         Directory.CreateDirectory(directory);
 
@@ -81,9 +86,9 @@ public class LocalDiskStorageService : IStorageService
         await _dbContext.SaveChangesAsync();
     }
 
-    public Task<Stream> GetObjectAsync(string bucketName, string key)
+    public Task<Stream> GetObjectAsync(string userId, string bucketName, string key)
     {
-        var filePath = GetObjectPath(bucketName, key);
+        var filePath = GetObjectPath(userId, bucketName, key);
 
         if (!File.Exists(filePath))
         {
@@ -94,91 +99,91 @@ public class LocalDiskStorageService : IStorageService
         return Task.FromResult(stream);
     }
 
-    public Task<bool> ObjectExistsAsync(string bucketName, string key)
+    public Task<bool> ObjectExistsAsync(string userId, string bucketName, string key) =>
+        _dbContext.StorageObjects.AnyAsync(x =>
+            x.BucketName == bucketName
+            && x.ObjectKey == key
+            && x.Bucket != null
+            && x.Bucket.OwnerId == userId);
+
+    public async Task<IEnumerable<string>> ListBucketsAsync(string userId)
     {
-        var filePath = GetObjectPath(bucketName, key);
-        return Task.FromResult(File.Exists(filePath));
-    }
-
-    public async Task<IEnumerable<string>> ListBucketsAsync()
-    {
-        if (!Directory.Exists(_storageRoot))
-        {
-            return Enumerable.Empty<string>();
-        }
-
-        var directories = Directory.GetDirectories(_storageRoot)
-            .Select(Path.GetFileName)
-            .Where(n => n != null)
-            .Cast<string>()
-            .ToList();
-
-        var now = DateTimeOffset.UtcNow;
-        foreach (var bucketName in directories)
-        {
-            await EnsureBucketMetadataAsync(bucketName, now, saveChanges: false);
-        }
-
-        var staleBuckets = await _dbContext.StorageBuckets
-            .Where(x => !directories.Contains(x.BucketName))
+        var userBuckets = await _dbContext.StorageBuckets
+            .Where(x => x.OwnerId == userId)
+            .OrderBy(x => x.BucketName)
+            .Select(x => x.BucketName)
             .ToListAsync();
 
-        if (staleBuckets.Count > 0)
-        {
-            _dbContext.StorageBuckets.RemoveRange(staleBuckets);
-        }
-
-        await _dbContext.SaveChangesAsync();
-
-        return directories;
+        return userBuckets;
     }
 
-    public Task<IEnumerable<S3ObjectMetadata>> ListObjectsAsync(string bucketName)
+    public async Task<IEnumerable<S3ObjectMetadata>> ListObjectsAsync(string userId, string bucketName)
     {
-        var bucketPath = GetBucketPath(bucketName);
-        if (!Directory.Exists(bucketPath))
-        {
-            return Task.FromResult(Enumerable.Empty<S3ObjectMetadata>());
-        }
+        var objects = await _dbContext.StorageObjects
+            .Where(x => x.BucketName == bucketName
+                && x.Bucket != null
+                && x.Bucket.OwnerId == userId)
+            .OrderBy(x => x.ObjectKey)
+            .Select(x => new S3ObjectMetadata(
+                x.ObjectKey,
+                x.SizeBytes,
+                x.UpdatedAt.UtcDateTime,
+                x.ContentType))
+            .ToListAsync();
 
-        var files = Directory.GetFiles(bucketPath, "*", SearchOption.AllDirectories)
-            .Where(f => !Path.GetFileName(f).StartsWith('.'))
-            .Select(f =>
+        return objects;
+    }
+
+    public async Task DeleteObjectAsync(string userId, string bucketName, string key)
+    {
+        await using (var transaction = await _dbContext.Database.BeginTransactionAsync())
+        {
+            var metadata = await _dbContext.StorageObjects
+                .FirstOrDefaultAsync(x => x.BucketName == bucketName && x.ObjectKey == key);
+
+            if (metadata != null)
             {
-                var info = new FileInfo(f);
-                var key = Path.GetRelativePath(bucketPath, f).Replace(Path.DirectorySeparatorChar, '/');
-                return new S3ObjectMetadata(key, info.Length, info.LastWriteTimeUtc, GetContentType(key));
-            })
-            .ToList();
+                _dbContext.StorageObjects.Remove(metadata);
+                await RecalculateBucketStatsAsync(bucketName, DateTimeOffset.UtcNow);
+            }
 
-        return SyncObjectsAndReturn(bucketName, files);
-    }
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
 
-    public Task DeleteObjectAsync(string bucketName, string key)
-    {
-        var filePath = GetObjectPath(bucketName, key);
+        var filePath = GetObjectPath(userId, bucketName, key);
         if (File.Exists(filePath))
         {
             File.Delete(filePath);
         }
-
-        return DeleteObjectMetadataAsync(bucketName, key);
     }
 
-    public Task DeleteBucketAsync(string bucketName)
+    public async Task DeleteBucketAsync(string userId, string bucketName)
     {
-        var bucketPath = GetBucketPath(bucketName);
+        await using (var transaction = await _dbContext.Database.BeginTransactionAsync())
+        {
+            var bucket = await _dbContext.StorageBuckets
+                .FirstOrDefaultAsync(x => x.BucketName == bucketName);
+
+            if (bucket != null)
+            {
+                _dbContext.StorageBuckets.Remove(bucket);
+            }
+
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+
+        var bucketPath = GetBucketPath(userId, bucketName);
         if (Directory.Exists(bucketPath))
         {
             Directory.Delete(bucketPath, true);
         }
-
-        return DeleteBucketMetadataAsync(bucketName);
     }
 
-    public async Task<string?> GetBucketPolicyAsync(string bucketName)
+    public async Task<string?> GetBucketPolicyAsync(string userId, string bucketName)
     {
-        var policyPath = Path.Combine(GetBucketPath(bucketName), ".policy.json");
+        var policyPath = Path.Combine(GetBucketPath(userId, bucketName), ".policy.json");
         if (!File.Exists(policyPath))
         {
             return null;
@@ -187,10 +192,10 @@ public class LocalDiskStorageService : IStorageService
         return await File.ReadAllTextAsync(policyPath);
     }
 
-    public async Task SetBucketPolicyAsync(string bucketName, string policyJson)
+    public async Task SetBucketPolicyAsync(string userId, string bucketName, string policyJson)
     {
-        await EnsureBucketExistsAsync(bucketName);
-        var policyPath = Path.Combine(GetBucketPath(bucketName), ".policy.json");
+        await EnsureBucketExistsAsync(bucketName, userId);
+        var policyPath = Path.Combine(GetBucketPath(userId, bucketName), ".policy.json");
         await File.WriteAllTextAsync(policyPath, policyJson);
 
         var now = DateTimeOffset.UtcNow;
@@ -203,26 +208,27 @@ public class LocalDiskStorageService : IStorageService
         }
     }
 
-    private string GetBucketPath(string bucketName) =>
-        Path.Combine(_storageRoot, bucketName);
-
-    private string GetObjectPath(string bucketName, string key) =>
-        Path.Combine(_storageRoot, bucketName, key.Replace('/', Path.DirectorySeparatorChar));
-
-    private static string GetContentType(string key) =>
-        Path.GetExtension(key).ToLowerInvariant() switch
+    public async Task<bool> UserHasAccessToBucketAsync(string bucketName, string userId)
+    {
+        var bucket = await _dbContext.StorageBuckets
+            .FirstOrDefaultAsync(x => x.BucketName == bucketName);
+        
+        if (bucket == null)
         {
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".png" => "image/png",
-            ".gif" => "image/gif",
-            ".pdf" => "application/pdf",
-            ".json" => "application/json",
-            ".txt" => "text/plain",
-            ".xml" => "application/xml",
-            _ => "application/octet-stream"
-        };
+            return false;
+        }
 
-    private async Task EnsureBucketMetadataAsync(string bucketName, DateTimeOffset? now = null, bool saveChanges = true)
+        // User has access if they own the bucket
+        return bucket.OwnerId == userId;
+    }
+
+    private string GetBucketPath(string userId, string bucketName) =>
+        Path.Combine(_storageRoot, userId, bucketName);
+
+    private string GetObjectPath(string userId, string bucketName, string key) =>
+        Path.Combine(_storageRoot, userId, bucketName, key.Replace('/', Path.DirectorySeparatorChar));
+
+    private async Task EnsureBucketMetadataAsync(string bucketName, DateTimeOffset? now = null, bool saveChanges = true, string? ownerId = null)
     {
         var timestamp = now ?? DateTimeOffset.UtcNow;
         var existingBucket = await _dbContext.StorageBuckets.FirstOrDefaultAsync(x => x.BucketName == bucketName);
@@ -231,6 +237,7 @@ public class LocalDiskStorageService : IStorageService
             _dbContext.StorageBuckets.Add(new StorageBucket
             {
                 BucketName = bucketName,
+                OwnerId = ownerId,
                 CreatedAt = timestamp,
                 UpdatedAt = timestamp,
                 ObjectCount = 0,
@@ -258,72 +265,4 @@ public class LocalDiskStorageService : IStorageService
         bucket.UpdatedAt = timestamp;
     }
 
-    private async Task<IEnumerable<S3ObjectMetadata>> SyncObjectsAndReturn(string bucketName, IReadOnlyList<S3ObjectMetadata> files)
-    {
-        var now = DateTimeOffset.UtcNow;
-        await EnsureBucketMetadataAsync(bucketName, now, saveChanges: false);
-
-        var existingObjects = await _dbContext.StorageObjects
-            .Where(x => x.BucketName == bucketName)
-            .ToDictionaryAsync(x => x.ObjectKey, StringComparer.Ordinal);
-
-        var fileKeys = new HashSet<string>(files.Select(x => x.Key), StringComparer.Ordinal);
-
-        foreach (var file in files)
-        {
-            if (!existingObjects.TryGetValue(file.Key, out var existing))
-            {
-                _dbContext.StorageObjects.Add(new StorageObject
-                {
-                    BucketName = bucketName,
-                    ObjectKey = file.Key,
-                    SizeBytes = file.Size,
-                    ContentType = file.ContentType,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                });
-                continue;
-            }
-
-            existing.SizeBytes = file.Size;
-            existing.ContentType = file.ContentType;
-            existing.UpdatedAt = now;
-        }
-
-        var missingFromDisk = existingObjects.Values
-            .Where(x => !fileKeys.Contains(x.ObjectKey))
-            .ToList();
-        if (missingFromDisk.Count > 0)
-        {
-            _dbContext.StorageObjects.RemoveRange(missingFromDisk);
-        }
-
-        await RecalculateBucketStatsAsync(bucketName, now);
-        await _dbContext.SaveChangesAsync();
-
-        return files;
-    }
-
-    private async Task DeleteObjectMetadataAsync(string bucketName, string key)
-    {
-        var metadata = await _dbContext.StorageObjects
-            .FirstOrDefaultAsync(x => x.BucketName == bucketName && x.ObjectKey == key);
-        if (metadata != null)
-        {
-            _dbContext.StorageObjects.Remove(metadata);
-        }
-
-        await RecalculateBucketStatsAsync(bucketName, DateTimeOffset.UtcNow);
-        await _dbContext.SaveChangesAsync();
-    }
-
-    private async Task DeleteBucketMetadataAsync(string bucketName)
-    {
-        var bucket = await _dbContext.StorageBuckets.FirstOrDefaultAsync(x => x.BucketName == bucketName);
-        if (bucket != null)
-        {
-            _dbContext.StorageBuckets.Remove(bucket);
-            await _dbContext.SaveChangesAsync();
-        }
-    }
 }

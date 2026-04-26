@@ -1,7 +1,9 @@
 using Amazon.S3;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.StaticFiles;
 using CradleSoft.DMS.Services;
+using System.Security.Claims;
 
 namespace CradleSoft.DMS.App_Storage.Controllers;
 
@@ -13,6 +15,7 @@ namespace CradleSoft.DMS.App_Storage.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class FilesController : ControllerBase
 {
     private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
@@ -25,15 +28,29 @@ public class FilesController : ControllerBase
         _configuration = configuration;
     }
 
+    private string GetUserId()
+    {
+        return User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+            ?? throw new InvalidOperationException("User ID not found in claims.");
+    }
+
     [HttpPost("upload")]
     public async Task<IActionResult> Upload(IFormFile file, [FromQuery] string? bucket = null)
     {
         if (file.Length == 0) return BadRequest("Empty file.");
 
+        var userId = GetUserId();
         var bucketName = bucket ?? _configuration["S3Settings:BucketName"] ?? "default";
+        
+        // Check if user has access to the bucket
+        if (!await _storageService.UserHasAccessToBucketAsync(bucketName, userId))
+        {
+            return Forbid();
+        }
+
         using var stream = file.OpenReadStream();
 
-        await _storageService.UploadObjectAsync(bucketName, file.FileName, stream, file.ContentType);
+        await _storageService.UploadObjectAsync(userId, bucketName, file.FileName, stream, file.ContentType);
 
         return Ok(new { Message = "File uploaded successfully!", Bucket = bucketName, Key = file.FileName });
     }
@@ -43,7 +60,15 @@ public class FilesController : ControllerBase
     {
         try
         {
-            var stream = await _storageService.GetObjectAsync(bucket, fileName);
+            var userId = GetUserId();
+            
+            // Check if user has access to the bucket
+            if (!await _storageService.UserHasAccessToBucketAsync(bucket, userId))
+            {
+                return Forbid();
+            }
+
+            var stream = await _storageService.GetObjectAsync(userId, bucket, fileName);
             var contentType = GetContentType(fileName);
 
             // Return known previewable file types inline so browsers can render them.
