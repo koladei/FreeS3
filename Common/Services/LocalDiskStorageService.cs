@@ -69,6 +69,15 @@ public class LocalDiskStorageService : IStorageService
 
         var now = DateTimeOffset.UtcNow;
         var fileInfo = new FileInfo(filePath);
+        
+        // Get the bucket to obtain its ID
+        var bucket = await _dbContext.StorageBuckets
+            .FirstOrDefaultAsync(x => x.BucketName == bucketName);
+        if (bucket == null)
+        {
+            throw new FileNotFoundException($"Bucket '{bucketName}' not found.");
+        }
+
         var existingObject = await _dbContext.StorageObjects
             .FirstOrDefaultAsync(x => x.BucketName == bucketName && x.ObjectKey == key);
 
@@ -76,6 +85,7 @@ public class LocalDiskStorageService : IStorageService
         {
             _dbContext.StorageObjects.Add(new StorageObject
             {
+                BucketId = bucket.Id,
                 BucketName = bucketName,
                 ObjectKey = key,
                 SizeBytes = fileInfo.Length,
@@ -143,6 +153,7 @@ public class LocalDiskStorageService : IStorageService
                 && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow)))
             .OrderBy(x => x.BucketName)
             .Select(x => new BucketAccessMetadata(
+                x.Id,
                 x.BucketName,
                 x.OwnerId == userId ? "owned" : "shared",
                 x.OwnerId == userId,
@@ -172,6 +183,7 @@ public class LocalDiskStorageService : IStorageService
                         && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow))))
             .OrderBy(x => x.ObjectKey)
             .Select(x => new S3ObjectMetadata(
+                x.RouteId,
                 x.ObjectKey,
                 x.SizeBytes,
                 x.UpdatedAt.UtcDateTime,
@@ -337,6 +349,16 @@ public class LocalDiskStorageService : IStorageService
             return false;
         }
 
+        // Fetch the bucket to get its ID
+        var bucket = await _dbContext.StorageBuckets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.BucketName == bucketName);
+
+        if (bucket == null)
+        {
+            return false;
+        }
+
         var existingShare = await _dbContext.BucketShares.FirstOrDefaultAsync(x =>
             x.BucketName == bucketName && x.SharedWithUserId == targetUser.Id);
 
@@ -353,6 +375,7 @@ public class LocalDiskStorageService : IStorageService
 
         _dbContext.BucketShares.Add(new BucketShare
         {
+            BucketId = bucket.Id,
             BucketName = bucketName,
             SharedByUserId = ownerUserId,
             SharedWithUserId = targetUser.Id,

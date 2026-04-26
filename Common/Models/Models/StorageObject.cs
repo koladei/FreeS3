@@ -4,6 +4,10 @@ public class StorageObject
 {
     public long Id { get; set; }
 
+    public Guid RouteId { get; set; } = Guid.NewGuid();
+
+    public Guid BucketId { get; set; }
+
     public string BucketName { get; set; } = string.Empty;
 
     public string ObjectKey { get; set; } = string.Empty;

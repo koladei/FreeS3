@@ -27,7 +27,7 @@ public interface IStorageService
     Task<bool> AcknowledgeBucketShareAsync(string userId, string bucketName);
 }
 
-public record S3ObjectMetadata(string Key, long Size, DateTime LastModified, string ContentType);
-public record BucketAccessMetadata(string BucketName, string AccessType, bool IsOwner, string? OwnerEmail, string? SharePermission);
+public record S3ObjectMetadata(Guid Id, string Key, long Size, DateTime LastModified, string ContentType);
+public record BucketAccessMetadata(Guid Id, string BucketName, string AccessType, bool IsOwner, string? OwnerEmail, string? SharePermission);
 public record BucketShareMetadata(string SharedWithEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, string Permission);
 public record IncomingBucketShareMetadata(string BucketName, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, bool IsAcknowledged, string Permission);

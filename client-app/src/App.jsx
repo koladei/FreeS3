@@ -46,8 +46,44 @@ const POLICY_PRESETS = {
   }
 };
 
+const GUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const App = () => {
   const { isAuthenticated, loading, user, logout } = useAuth();
+
+  const getAppRouteFromPath = useCallback((pathName) => {
+    const normalizedPath = (pathName || '/').replace(/\/+$/, '') || '/';
+
+    if (normalizedPath === '/login') {
+      return { kind: 'login' };
+    }
+
+    if (normalizedPath === '/register') {
+      return { kind: 'register' };
+    }
+
+    if (normalizedPath === '/buckets' || normalizedPath === '/') {
+      return { kind: 'all' };
+    }
+
+    if (normalizedPath.startsWith('/buckets/')) {
+      const segments = normalizedPath.split('/').filter(Boolean);
+      const bucketId = segments[1];
+
+      if (segments.length === 2 && GUID_REGEX.test(bucketId)) {
+        return { kind: 'bucket', bucketId };
+      }
+
+      if (segments.length === 4 && segments[2] === 'objects' && GUID_REGEX.test(bucketId) && GUID_REGEX.test(segments[3])) {
+        return { kind: 'object', bucketId, objectId: segments[3] };
+      }
+
+      return { kind: 'all' };
+    }
+
+    return { kind: 'unknown' };
+  }, []);
+
   const getAuthViewFromPath = useCallback(() => {
     const path = window.location.pathname.toLowerCase();
     return path === '/register' ? 'register' : 'login';
@@ -56,9 +92,13 @@ const App = () => {
   const [currentView, setCurrentView] = useState(() => getAuthViewFromPath()); // 'app', 'login', 'register'
 
   const [accessibleBuckets, setAccessibleBuckets] = useState([]);
-  const [selectedBucket, setSelectedBucket] = useState(null);
+  const [bucketsLoaded, setBucketsLoaded] = useState(false);
+  const [selectedBucketId, setSelectedBucketId] = useState(null);
+  const [selectedBucketName, setSelectedBucketName] = useState(null);
+  const [selectedObjectId, setSelectedObjectId] = useState(null);
   const [activeBucketView, setActiveBucketView] = useState('objects');
   const [objects, setObjects] = useState([]);
+  const [objectsLoaded, setObjectsLoaded] = useState(false);
   const [appLoading, setAppLoading] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
@@ -88,8 +128,53 @@ const App = () => {
     }
   }, []);
 
+  const navigateToAllBucketsView = useCallback(() => {
+    setSelectedObjectId(null);
+    setPreviewObject(null);
+    setActiveBucketView('all');
+  }, []);
+
+  const navigateToBucketObjectsView = useCallback((bucketId, bucketName) => {
+    setSelectedBucketId(bucketId);
+    setSelectedBucketName(bucketName);
+    setSelectedObjectId(null);
+    setPreviewObject(null);
+    setActiveBucketView('objects');
+  }, []);
+
   useEffect(() => {
     const onPopState = () => {
+      if (isAuthenticated) {
+        const route = getAppRouteFromPath(window.location.pathname);
+        if (route.kind === 'all') {
+          setSelectedObjectId(null);
+          setPreviewObject(null);
+          setActiveBucketView('all');
+          return;
+        }
+
+        if ((route.kind === 'bucket' || route.kind === 'object') && route.bucketId) {
+          const bucket = accessibleBuckets.find((b) => b.id === route.bucketId);
+          if (bucket) {
+            setSelectedBucketId(route.bucketId);
+            setSelectedBucketName(bucket.bucketName);
+            setSelectedObjectId(route.kind === 'object' ? route.objectId : null);
+            setActiveBucketView('objects');
+            return;
+          }
+        }
+
+        if (route.kind === 'login' || route.kind === 'register') {
+          window.history.replaceState({}, '', '/buckets');
+          setActiveBucketView('all');
+          return;
+        }
+
+        window.history.replaceState({}, '', '/buckets');
+        setActiveBucketView('all');
+        return;
+      }
+
       if (!isAuthenticated) {
         setCurrentView(getAuthViewFromPath());
       }
@@ -97,7 +182,7 @@ const App = () => {
 
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [getAuthViewFromPath, isAuthenticated]);
+  }, [accessibleBuckets, getAppRouteFromPath, getAuthViewFromPath, isAuthenticated]);
 
   // Redirect based on auth state and requested path.
   useEffect(() => {
@@ -107,14 +192,56 @@ const App = () => {
 
     if (isAuthenticated) {
       setCurrentView('app');
-      if (window.location.pathname !== '/') {
-        window.history.replaceState({}, '', '/');
+
+      const route = getAppRouteFromPath(window.location.pathname);
+      if (route.kind === 'all') {
+        setSelectedObjectId(null);
+        setPreviewObject(null);
+        setActiveBucketView('all');
+        return;
       }
+
+      if ((route.kind === 'bucket' || route.kind === 'object') && route.bucketId) {
+        if (!bucketsLoaded) {
+          return;
+        }
+
+        const bucket = accessibleBuckets.find((b) => b.id === route.bucketId);
+        if (bucket) {
+          setSelectedBucketId(route.bucketId);
+          setSelectedBucketName(bucket.bucketName);
+          setSelectedObjectId(route.kind === 'object' ? route.objectId : null);
+          setActiveBucketView('objects');
+          return;
+        }
+      }
+
+      if (bucketsLoaded && window.location.pathname !== '/buckets') {
+        window.history.replaceState({}, '', '/buckets');
+      }
+
+      setActiveBucketView('all');
       return;
     }
 
     setCurrentView(getAuthViewFromPath());
-  }, [isAuthenticated, loading, getAuthViewFromPath]);
+  }, [accessibleBuckets, bucketsLoaded, getAppRouteFromPath, getAuthViewFromPath, isAuthenticated, loading]);
+
+  useEffect(() => {
+    if (!isAuthenticated || currentView !== 'app') {
+      return;
+    }
+
+    const targetPath = activeBucketView === 'all' || !selectedBucketId
+      ? '/buckets'
+      : selectedObjectId
+        ? `/buckets/${selectedBucketId}/objects/${selectedObjectId}`
+        : `/buckets/${selectedBucketId}`;
+
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
+  }, [activeBucketView, currentView, isAuthenticated, selectedBucketId, selectedObjectId]);
 
   const fetchBuckets = async () => {
     try {
@@ -123,19 +250,24 @@ const App = () => {
       setAccessibleBuckets(nextBuckets);
 
       if (nextBuckets.length === 0) {
-        setSelectedBucket(null);
+        setSelectedBucketId(null);
+        setSelectedBucketName(null);
+        setActiveBucketView('all');
         return;
       }
 
-      if (!selectedBucket || !nextBuckets.some((bucket) => bucket.bucketName === selectedBucket)) {
-        setSelectedBucket(nextBuckets[0].bucketName);
+      if (!selectedBucketId || !nextBuckets.some((bucket) => bucket.id === selectedBucketId)) {
+        setSelectedBucketId(nextBuckets[0].id);
+        setSelectedBucketName(nextBuckets[0].bucketName);
       }
     } catch (error) {
       console.error('Failed to fetch buckets', error);
+    } finally {
+      setBucketsLoaded(true);
     }
   };
 
-  const selectedBucketMeta = accessibleBuckets.find((bucket) => bucket.bucketName === selectedBucket) || null;
+  const selectedBucketMeta = accessibleBuckets.find((bucket) => bucket.id === selectedBucketId) || null;
   const topSidebarBuckets = accessibleBuckets.slice(0, 5);
   const ownedBuckets = accessibleBuckets.filter((bucket) => bucket.isOwner);
   const sharedBuckets = accessibleBuckets.filter((bucket) => !bucket.isOwner);
@@ -153,14 +285,17 @@ const App = () => {
 
   const fetchObjects = useCallback(async (bucket) => {
     if (!bucket) return;
-     setAppLoading(true);
+    setObjectsLoaded(false);
+    setAppLoading(true);
     try {
       const response = await storageApi.listObjects(bucket);
       setObjects(response.data);
     } catch (error) {
       console.error('Failed to fetch objects', error);
+      setObjects([]);
     } finally {
-       setAppLoading(false);
+      setObjectsLoaded(true);
+      setAppLoading(false);
     }
   }, []);
 
@@ -174,10 +309,33 @@ const App = () => {
   }, [isAuthenticated, currentView, fetchIncomingShares]);
 
   useEffect(() => {
-    if (isAuthenticated && currentView === 'app' && selectedBucket) {
-      fetchObjects(selectedBucket);
+    if (isAuthenticated && currentView === 'app' && selectedBucketName) {
+      fetchObjects(selectedBucketName);
     }
-  }, [isAuthenticated, currentView, selectedBucket, fetchObjects]);
+  }, [isAuthenticated, currentView, selectedBucketName, fetchObjects]);
+
+  useEffect(() => {
+    if (!selectedObjectId) {
+      if (previewObject) {
+        setPreviewObject(null);
+      }
+      return;
+    }
+
+    if (!objectsLoaded) {
+      return;
+    }
+
+    const targetObject = objects.find((objectItem) => objectItem.id === selectedObjectId);
+    if (!targetObject) {
+      setSelectedObjectId(null);
+      return;
+    }
+
+    if (previewObject?.id !== targetObject.id) {
+      void openPreview(targetObject, { syncRoute: false });
+    }
+  }, [objects, objectsLoaded, previewObject, selectedObjectId]);
 
   const handleCreateBucket = async (e) => {
     e.preventDefault();
@@ -196,7 +354,10 @@ const App = () => {
     if (!confirm(`Are you sure you want to delete bucket "${name}" and all its contents?`)) return;
     try {
       await storageApi.deleteBucket(name);
-      if (selectedBucket === name) setSelectedBucket(null);
+      if (selectedBucketName === name) {
+        setSelectedBucketId(null);
+        setSelectedBucketName(null);
+      }
       fetchBuckets();
     } catch (error) {
       alert('Failed to delete bucket');
@@ -306,8 +467,8 @@ const App = () => {
   const handleDeleteObject = async (key) => {
     if (!confirm(`Delete object "${key}"?`)) return;
     try {
-      await storageApi.deleteObject(selectedBucket, key);
-      fetchObjects(selectedBucket);
+      await storageApi.deleteObject(selectedBucketName, key);
+      fetchObjects(selectedBucketName);
     } catch (error) {
       alert('Failed to delete object');
     }
@@ -318,18 +479,18 @@ const App = () => {
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
-    if (!file || !selectedBucket) return;
+    if (!file || !selectedBucketName) return;
 
     setUploadProgress(0);
     try {
-      const result = await storageApi.uploadDocument(selectedBucket, file.name, file);
+      const result = await storageApi.uploadDocument(selectedBucketName, file.name, file);
       if (result.contractTemplate) {
         setContractTemplates((prev) => ({
           ...prev,
           [file.name]: result.contractTemplate,
         }));
       }
-      fetchObjects(selectedBucket);
+      fetchObjects(selectedBucketName);
     } catch (error) {
       alert('Upload failed');
     } finally {
@@ -339,7 +500,7 @@ const App = () => {
 
   const handleRegisterContract = async (obj) => {
     try {
-      const res = await storageApi.registerPdfAsContract(selectedBucket, obj.key, obj.key, {
+      const res = await storageApi.registerPdfAsContract(selectedBucketName, obj.key, obj.key, {
         title: obj.key,
       });
       setContractTemplates((prev) => ({ ...prev, [obj.key]: res.data }));
@@ -388,8 +549,14 @@ const App = () => {
 
   const canPreview = (contentType) => getPreviewType(contentType) !== 'unsupported';
 
-  const openPreview = async (obj) => {
-    const url = storageApi.getDownloadUrl(selectedBucket, obj.key);
+  const openPreview = async (obj, options = {}) => {
+    const { syncRoute = true } = options;
+
+    if (syncRoute) {
+      setSelectedObjectId(obj.id);
+    }
+
+    const url = storageApi.getDownloadUrl(selectedBucketName, obj.key);
     const previewType = getPreviewType(obj.contentType);
 
     if (previewType === 'text') {
@@ -407,7 +574,10 @@ const App = () => {
     setPreviewObject({ ...obj, previewType, url });
   };
 
-  const closePreview = () => setPreviewObject(null);
+  const closePreview = () => {
+    setSelectedObjectId(null);
+    setPreviewObject(null);
+  };
 
   if (loading) {
     return (
@@ -425,7 +595,7 @@ const App = () => {
       <Login
         onLoginSuccess={() => {
           setCurrentView('app');
-          window.history.replaceState({}, '', '/');
+          window.history.replaceState({}, '', '/buckets');
         }}
         onShowRegister={() => navigateToAuthView('register')}
       />
@@ -447,7 +617,7 @@ const App = () => {
       <Login
         onLoginSuccess={() => {
           setCurrentView('app');
-          window.history.replaceState({}, '', '/');
+          window.history.replaceState({}, '', '/buckets');
         }}
         onShowRegister={() => navigateToAuthView('register')}
       />
@@ -482,17 +652,14 @@ const App = () => {
           {topSidebarBuckets.map((bucket) => (
             <div
               key={bucket.bucketName}
-              onClick={() => {
-                setSelectedBucket(bucket.bucketName);
-                setActiveBucketView('objects');
-              }}
-              className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${selectedBucket === bucket.bucketName
+              onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)}
+              className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${selectedBucketId === bucket.id
                   ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20'
                   : 'hover:bg-premium-card text-slate-400 border border-transparent'
                 }`}
             >
               <div className="flex items-center gap-3 overflow-hidden">
-                <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucket === bucket.bucketName ? 'text-blue-500' : 'text-slate-500'}`} />
+                <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-blue-500' : 'text-slate-500'}`} />
                 <span className="text-sm font-medium truncate">{bucket.bucketName}</span>
                 {!bucket.isOwner && <Share2 className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="Shared with you" />}
               </div>
@@ -528,7 +695,7 @@ const App = () => {
 
         <div className="p-4 border-t border-premium-border glass space-y-2">
           <button
-            onClick={() => setActiveBucketView('all')}
+            onClick={navigateToAllBucketsView}
             className="w-full py-2 px-3 bg-premium-card hover:bg-premium-border border border-premium-border rounded-xl text-xs font-semibold uppercase tracking-wide"
           >
             View All Buckets
@@ -546,8 +713,8 @@ const App = () => {
         <header className="h-20 glass border-b border-premium-border flex items-center justify-between px-8 z-10">
           <div className="flex items-center gap-4">
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              {activeBucketView === 'all' ? 'All Buckets' : (selectedBucket || 'Select a Bucket')}
-              {activeBucketView !== 'all' && selectedBucket && <span className="text-slate-600 font-normal">/</span>}
+              {activeBucketView === 'all' ? 'All Buckets' : (selectedBucketName || 'Select a Bucket')}
+              {activeBucketView !== 'all' && selectedBucketName && <span className="text-slate-600 font-normal">/</span>}
               {activeBucketView !== 'all' && selectedBucketMeta && !selectedBucketMeta.isOwner && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold uppercase tracking-wide">
                   Shared
@@ -572,7 +739,7 @@ const App = () => {
             {activeBucketView !== 'all' && (
               <>
                 <button
-                  onClick={() => fetchObjects(selectedBucket)}
+                  onClick={() => fetchObjects(selectedBucketName)}
                   className="p-2.5 hover:bg-premium-card rounded-xl border border-transparent hover:border-premium-border transition-all"
                 >
                   <RefreshCw className={`w-5 h-5 ${appLoading ? 'animate-spin' : ''}`} />
@@ -583,12 +750,12 @@ const App = () => {
                   <input type="file" className="hidden" onChange={handleFileUpload} />
                 </label>
 
-                {selectedBucket && (
+                {selectedBucketName && (
                   <div className="inline-flex items-center gap-1 p-1 border border-premium-border rounded-xl bg-premium-card/50">
                     {selectedBucketMeta?.isOwner ? (
                       <>
                         <button
-                          onClick={() => openShareModal(selectedBucket)}
+                          onClick={() => openShareModal(selectedBucketName)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-amber-500/15 text-amber-300 text-xs font-semibold uppercase tracking-wide"
                           title="Share / Unshare"
                         >
@@ -596,7 +763,7 @@ const App = () => {
                           Share
                         </button>
                         <button
-                          onClick={() => openPolicyModal(selectedBucket)}
+                          onClick={() => openPolicyModal(selectedBucketName)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-blue-500/15 text-blue-300 text-xs font-semibold uppercase tracking-wide"
                           title="Bucket Policy"
                         >
@@ -604,7 +771,7 @@ const App = () => {
                           Policy
                         </button>
                         <button
-                          onClick={() => handleDeleteBucket(selectedBucket)}
+                          onClick={() => handleDeleteBucket(selectedBucketName)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-red-500/15 text-red-300 text-xs font-semibold uppercase tracking-wide"
                           title="Delete Bucket"
                         >
@@ -669,7 +836,7 @@ const App = () => {
                     <div key={`owned-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
                       <span className="font-medium">{bucket.bucketName}</span>
                       <div className="flex items-center gap-2">
-                        <button onClick={() => { setSelectedBucket(bucket.bucketName); setActiveBucketView('objects'); }} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
+                        <button onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
                         <button onClick={() => openShareModal(bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300">Manage Shares</button>
                       </div>
                     </div>
@@ -686,7 +853,7 @@ const App = () => {
                         <Share2 className="w-4 h-4 text-amber-400" />
                         <span className="font-medium">{bucket.bucketName}</span>
                       </div>
-                      <button onClick={() => { setSelectedBucket(bucket.bucketName); setActiveBucketView('objects'); }} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
+                      <button onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
                     </div>
                   ))}
                 </section>
@@ -718,7 +885,7 @@ const App = () => {
                 ))}
               </section>
             </div>
-          ) : !selectedBucket ? (
+          ) : !selectedBucketName ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-4">
               <div className="w-20 h-20 rounded-3xl bg-premium-card flex items-center justify-center border border-premium-border">
                 <Database className="w-10 h-10 opacity-20" />
@@ -747,7 +914,7 @@ const App = () => {
                       </tr>
                     ) : (
                       filteredObjects.map((obj) => (
-                        <tr key={obj.key} className="hover:bg-white/5 transition-colors group">
+                        <tr key={obj.id} className="hover:bg-white/5 transition-colors group">
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
                               <div className="w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center">
@@ -771,7 +938,7 @@ const App = () => {
                           <td className="px-6 py-4">
                             <div className="flex items-center justify-end gap-1">
                               <a
-                                href={storageApi.getDownloadUrl(selectedBucket, obj.key)}
+                                href={storageApi.getDownloadUrl(selectedBucketName, obj.key)}
                                 download
                                 className="p-2 hover:bg-blue-500/10 hover:text-blue-400 rounded-lg transition-all"
                                 title="Download"

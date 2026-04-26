@@ -2,6 +2,8 @@ namespace CradleSoft.DMS.Models;
 
 public class StorageBucket
 {
+    public Guid Id { get; set; } = Guid.NewGuid();
+
     public string BucketName { get; set; } = string.Empty;
 
     public string? OwnerId { get; set; }

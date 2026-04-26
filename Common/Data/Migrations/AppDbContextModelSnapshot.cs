@@ -122,6 +122,62 @@ namespace CradleSoft.DMS.Data.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("CradleSoft.DMS.Models.BucketShare", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset?>("AcknowledgedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("BucketId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BucketName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Permission")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasDefaultValue("ViewOnly");
+
+                    b.Property<string>("SharedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("SharedWithUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BucketId");
+
+                    b.HasIndex("SharedByUserId");
+
+                    b.HasIndex("SharedWithUserId");
+
+                    b.HasIndex("BucketName", "SharedWithUserId")
+                        .IsUnique();
+
+                    b.ToTable("BucketShares");
+                });
+
             modelBuilder.Entity("CradleSoft.DMS.Models.ContractFieldValue", b =>
                 {
                     b.Property<int>("Id")
@@ -403,7 +459,12 @@ namespace CradleSoft.DMS.Data.Migrations
 
             modelBuilder.Entity("CradleSoft.DMS.Models.StorageBucket", b =>
                 {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("BucketName")
+                        .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
@@ -429,7 +490,9 @@ namespace CradleSoft.DMS.Data.Migrations
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.HasKey("BucketName");
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("BucketName");
 
                     b.HasIndex("OwnerId");
 
@@ -443,6 +506,9 @@ namespace CradleSoft.DMS.Data.Migrations
                         .HasColumnType("bigint");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("BucketId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("BucketName")
                         .IsRequired()
@@ -462,6 +528,9 @@ namespace CradleSoft.DMS.Data.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("nvarchar(1024)");
 
+                    b.Property<Guid>("RouteId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<long>("SizeBytes")
                         .HasColumnType("bigint");
 
@@ -469,6 +538,11 @@ namespace CradleSoft.DMS.Data.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("BucketId");
+
+                    b.HasIndex("RouteId")
+                        .IsUnique();
 
                     b.HasIndex("BucketName", "ObjectKey")
                         .IsUnique();
@@ -620,6 +694,33 @@ namespace CradleSoft.DMS.Data.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("CradleSoft.DMS.Models.BucketShare", b =>
+                {
+                    b.HasOne("CradleSoft.DMS.Models.StorageBucket", "Bucket")
+                        .WithMany("Shares")
+                        .HasForeignKey("BucketId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("CradleSoft.DMS.Models.ApplicationUser", "SharedByUser")
+                        .WithMany()
+                        .HasForeignKey("SharedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CradleSoft.DMS.Models.ApplicationUser", "SharedWithUser")
+                        .WithMany()
+                        .HasForeignKey("SharedWithUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Bucket");
+
+                    b.Navigation("SharedByUser");
+
+                    b.Navigation("SharedWithUser");
+                });
+
             modelBuilder.Entity("CradleSoft.DMS.Models.ContractFieldValue", b =>
                 {
                     b.HasOne("CradleSoft.DMS.Models.ContractInstance", "Instance")
@@ -689,7 +790,7 @@ namespace CradleSoft.DMS.Data.Migrations
                 {
                     b.HasOne("CradleSoft.DMS.Models.StorageBucket", "Bucket")
                         .WithMany("Objects")
-                        .HasForeignKey("BucketName")
+                        .HasForeignKey("BucketId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -764,6 +865,8 @@ namespace CradleSoft.DMS.Data.Migrations
             modelBuilder.Entity("CradleSoft.DMS.Models.StorageBucket", b =>
                 {
                     b.Navigation("Objects");
+
+                    b.Navigation("Shares");
                 });
 #pragma warning restore 612, 618
         }

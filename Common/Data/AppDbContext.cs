@@ -119,7 +119,8 @@ namespace CradleSoft.DMS.Data
 
       builder.Entity<StorageBucket>(entity =>
       {
-        entity.HasKey(x => x.BucketName);
+        entity.HasKey(x => x.Id);
+        entity.HasAlternateKey(x => x.BucketName);
         entity.Property(x => x.BucketName).HasMaxLength(255);
         entity.Property(x => x.PolicyJson);
         entity.Property(x => x.ObjectCount).HasDefaultValue(0L);
@@ -136,21 +137,25 @@ namespace CradleSoft.DMS.Data
       builder.Entity<StorageObject>(entity =>
       {
         entity.HasKey(x => x.Id);
+        entity.Property(x => x.RouteId).IsRequired();
+        entity.Property(x => x.BucketId).IsRequired();
         entity.Property(x => x.BucketName).HasMaxLength(255).IsRequired();
         entity.Property(x => x.ObjectKey).HasMaxLength(1024).IsRequired();
         entity.Property(x => x.ContentType).HasMaxLength(255).IsRequired();
 
+        entity.HasIndex(x => x.RouteId).IsUnique();
         entity.HasIndex(x => new { x.BucketName, x.ObjectKey }).IsUnique();
 
         entity.HasOne(x => x.Bucket)
           .WithMany(x => x.Objects)
-          .HasForeignKey(x => x.BucketName)
+          .HasForeignKey(x => x.BucketId)
           .OnDelete(DeleteBehavior.Cascade);
       });
 
       builder.Entity<BucketShare>(entity =>
       {
         entity.HasKey(x => x.Id);
+        entity.Property(x => x.BucketId).IsRequired();
         entity.Property(x => x.BucketName).HasMaxLength(255).IsRequired();
         entity.Property(x => x.SharedByUserId).HasMaxLength(450).IsRequired();
         entity.Property(x => x.SharedWithUserId).HasMaxLength(450).IsRequired();
@@ -166,7 +171,7 @@ namespace CradleSoft.DMS.Data
 
         entity.HasOne(x => x.Bucket)
           .WithMany(x => x.Shares)
-          .HasForeignKey(x => x.BucketName)
+          .HasForeignKey(x => x.BucketId)
           .OnDelete(DeleteBehavior.Cascade);
 
         entity.HasOne(x => x.SharedByUser)

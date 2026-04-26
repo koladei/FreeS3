@@ -11,6 +11,8 @@ public class BucketShare
 {
     public long Id { get; set; }
 
+    public Guid BucketId { get; set; }
+
     public string BucketName { get; set; } = string.Empty;
 
     public string SharedByUserId { get; set; } = string.Empty;
