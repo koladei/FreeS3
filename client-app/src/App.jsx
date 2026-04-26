@@ -14,15 +14,19 @@ import {
   Clock,
   Layers,
   Search,
-  ChevronRight,
   Shield,
   Code,
   Check,
   FileText,
   FilePlus,
+  LogOut,
+  User,
 } from 'lucide-react';
 import { storageApi } from './api';
 import ContractManagerModal from './ContractManagerModal';
+import { useAuth } from './AuthContext';
+import Login from './Login';
+import Register from './Register';
 
 const POLICY_PRESETS = {
   private: {
@@ -40,10 +44,18 @@ const POLICY_PRESETS = {
 };
 
 const App = () => {
+  const { isAuthenticated, loading, user, logout } = useAuth();
+  const getAuthViewFromPath = useCallback(() => {
+    const path = window.location.pathname.toLowerCase();
+    return path === '/register' ? 'register' : 'login';
+  }, []);
+
+  const [currentView, setCurrentView] = useState(() => getAuthViewFromPath()); // 'app', 'login', 'register'
+
   const [buckets, setBuckets] = useState([]);
   const [selectedBucket, setSelectedBucket] = useState(null);
   const [objects, setObjects] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [appLoading, setAppLoading] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
   const [policyTarget, setPolicyTarget] = useState(null);
@@ -52,9 +64,45 @@ const App = () => {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [previewObject, setPreviewObject] = useState(null);
-  // map of objectKey → contractTemplate (populated on upload or manual register)
+  // map of objectKey -> contractTemplate (populated on upload or manual register)
   const [contractTemplates, setContractTemplates] = useState({});
   const [contractTarget, setContractTarget] = useState(null);
+
+  const navigateToAuthView = useCallback((view) => {
+    const path = view === 'register' ? '/register' : '/login';
+    setCurrentView(view);
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, '', path);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      if (!isAuthenticated) {
+        setCurrentView(getAuthViewFromPath());
+      }
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [getAuthViewFromPath, isAuthenticated]);
+
+  // Redirect based on auth state and requested path.
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    if (isAuthenticated) {
+      setCurrentView('app');
+      if (window.location.pathname !== '/') {
+        window.history.replaceState({}, '', '/');
+      }
+      return;
+    }
+
+    setCurrentView(getAuthViewFromPath());
+  }, [isAuthenticated, loading, getAuthViewFromPath]);
 
   const fetchBuckets = async () => {
     try {
@@ -70,26 +118,30 @@ const App = () => {
 
   const fetchObjects = useCallback(async (bucket) => {
     if (!bucket) return;
-    setLoading(true);
+     setAppLoading(true);
     try {
       const response = await storageApi.listObjects(bucket);
       setObjects(response.data);
     } catch (error) {
       console.error('Failed to fetch objects', error);
     } finally {
-      setLoading(false);
+       setAppLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    if (!isAuthenticated || currentView !== 'app') {
+      return;
+    }
+
     fetchBuckets();
-  }, []);
+  }, [isAuthenticated, currentView]);
 
   useEffect(() => {
-    if (selectedBucket) {
+    if (isAuthenticated && currentView === 'app' && selectedBucket) {
       fetchObjects(selectedBucket);
     }
-  }, [selectedBucket, fetchObjects]);
+  }, [isAuthenticated, currentView, selectedBucket, fetchObjects]);
 
   const handleCreateBucket = async (e) => {
     e.preventDefault();
@@ -197,7 +249,7 @@ const App = () => {
   };
 
   const filteredObjects = objects.filter(obj =>
-    obj.key.toLowerCase().includes(searchQuery.toLowerCase())
+    (obj.key || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const formatSize = (bytes) => {
@@ -246,6 +298,51 @@ const App = () => {
   };
 
   const closePreview = () => setPreviewObject(null);
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-gray-600 font-medium">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (currentView === 'login') {
+    return (
+      <Login
+        onLoginSuccess={() => {
+          setCurrentView('app');
+          window.history.replaceState({}, '', '/');
+        }}
+        onShowRegister={() => navigateToAuthView('register')}
+      />
+    );
+  }
+
+  if (currentView === 'register') {
+    return (
+      <Register
+        onRegisterSuccess={() => navigateToAuthView('login')}
+        onBackToLogin={() => navigateToAuthView('login')}
+      />
+    );
+  }
+
+  // Main App - only shown when authenticated
+  if (!isAuthenticated) {
+    return (
+      <Login
+        onLoginSuccess={() => {
+          setCurrentView('app');
+          window.history.replaceState({}, '', '/');
+        }}
+        onShowRegister={() => navigateToAuthView('register')}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen bg-premium-dark text-slate-200 overflow-hidden">
@@ -338,13 +435,31 @@ const App = () => {
               onClick={() => fetchObjects(selectedBucket)}
               className="p-2.5 hover:bg-premium-card rounded-xl border border-transparent hover:border-premium-border transition-all"
             >
-              <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-5 h-5 ${appLoading ? 'animate-spin' : ''}`} />
             </button>
             <label className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold text-sm cursor-pointer transition-all shadow-lg shadow-blue-500/20 active:scale-95">
               <Upload className="w-4 h-4" />
               Upload Object
               <input type="file" className="hidden" onChange={handleFileUpload} />
             </label>
+              <div className="flex items-center gap-4 ml-4 pl-4 border-l border-premium-border">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center">
+                    <User className="w-4 h-4 text-white" />
+                  </div>
+                  <span className="text-sm font-medium">{user?.username || 'User'}</span>
+                </div>
+                <button
+                  onClick={() => {
+                    logout();
+                    navigateToAuthView('login');
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-lg transition-all"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Logout
+                </button>
+              </div>
           </div>
         </header>
 
@@ -397,7 +512,7 @@ const App = () => {
                           </td>
                           <td className="px-6 py-4">
                             <span className="text-[10px] px-2 py-1 bg-slate-800 rounded-md text-slate-400 font-bold uppercase border border-premium-border">
-                              {obj.contentType.split('/')[1] || 'binary'}
+                              {obj.contentType?.split('/')[1] || 'binary'}
                             </span>
                           </td>
                           <td className="px-6 py-4">

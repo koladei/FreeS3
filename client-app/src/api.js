@@ -1,16 +1,59 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:5289/api';
-const S3_BASE_URL = 'http://localhost:5289/s3';
-const CONTRACT_BASE_URL = 'http://localhost:5290/api/contracts';
+const DEFAULT_GATEWAY_ORIGIN = 'http://localhost:5270';
+const API_ORIGIN = typeof window !== 'undefined' && window.location.port !== '5174'
+  ? window.location.origin
+  : DEFAULT_GATEWAY_ORIGIN;
 
-const api = axios.create({
-  baseURL: API_BASE_URL,
+const AUTH_BASE_URL = `${API_ORIGIN}/api/auth`;
+const API_BASE_URL = `${API_ORIGIN}/api`;
+const S3_BASE_URL = `${API_ORIGIN}/s3`;
+const CONTRACT_BASE_URL = `${API_ORIGIN}/api/contracts`;
+
+// Create separate axios instances
+const authClient = axios.create({
+  baseURL: AUTH_BASE_URL,
+  withCredentials: true,
+});
+
+const s3Api = axios.create({
+  baseURL: S3_BASE_URL,
+  withCredentials: true,
 });
 
 const contractApi = axios.create({
   baseURL: CONTRACT_BASE_URL,
+  withCredentials: true,
 });
+
+// Auth API functions
+export const auth = {
+  register: (username, email, password, firstName, lastName) =>
+    authClient.post('/register-user', {
+      username,
+      email,
+      password,
+      firstName,
+      lastName,
+    }),
+
+  login: (username, password) =>
+    authClient.post('/login', {
+      username,
+      password,
+    }),
+
+  refreshToken: (token, refreshToken) =>
+    authClient.post('/refresh-token', {
+      token,
+      refreshToken,
+    }),
+
+  logout: () => authClient.post('/logout'),
+
+  getSession: () =>
+    authClient.get('/session'),
+};
 
 const isPdfAsset = (file, key = '') => {
   const fileType = (file?.type || '').toLowerCase();
@@ -24,23 +67,24 @@ const isPdfAsset = (file, key = '') => {
 
 export const storageApi = {
   // Buckets
-  listBuckets: () => api.get('/buckets'),
-  createBucket: (name) => api.post(`/buckets/${name}`),
-  deleteBucket: (name) => api.delete(`/buckets/${name}`),
+  listBuckets: () => s3Api.get('/buckets'),
+  createBucket: (name) => s3Api.post(`/buckets/${name}`),
+  deleteBucket: (name) => s3Api.delete(`/buckets/${name}`),
   
   // Policies
-  getBucketPolicy: (name) => api.get(`/buckets/${name}/policy`),
-  setBucketPolicy: (name, policy) => api.put(`/buckets/${name}/policy`, JSON.stringify(policy), {
+  getBucketPolicy: (name) => s3Api.get(`/buckets/${name}/policy`),
+  setBucketPolicy: (name, policy) => s3Api.put(`/buckets/${name}/policy`, JSON.stringify(policy), {
     headers: { 'Content-Type': 'application/json' }
   }),
   
   // Objects
-  listObjects: (bucket) => api.get(`/buckets/${bucket}/objects`),
-  deleteObject: (bucket, key) => api.delete(`/buckets/${bucket}/objects/${key}`),
+  listObjects: (bucket) => s3Api.get(`/buckets/${bucket}/objects`),
+  deleteObject: (bucket, key) => s3Api.delete(`/buckets/${bucket}/objects/${key}`),
   
   // S3 Native Upload (Emulator)
   uploadObject: (bucket, key, file) => {
     return axios.put(`${S3_BASE_URL}/${bucket}/${key}`, file, {
+      withCredentials: true,
       headers: {
         'Content-Type': file.type || 'application/octet-stream',
       },
