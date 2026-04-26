@@ -186,6 +186,22 @@ public class LocalDiskStorageService : IStorageService
             .Select(x => x with { DisplayName = StorageSystemBuckets.ToDisplayName(x.BucketName) })
             .ToList();
 
+        if (!buckets.Any(x => StorageSystemBuckets.IsIncomingContracts(x.BucketName)))
+        {
+            buckets.Add(new BucketAccessMetadata(
+                StorageSystemBuckets.IncomingContractsVirtualBucketId,
+                StorageSystemBuckets.IncomingContractsVirtualName,
+                StorageSystemBuckets.IncomingContracts,
+                "virtual",
+                false,
+                null,
+                null));
+        }
+
+        buckets = buckets
+            .OrderBy(x => x.DisplayName)
+            .ToList();
+
         return buckets;
     }
 
@@ -213,6 +229,11 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task DeleteObjectAsync(string userId, string bucketName, string key)
     {
+        if (StorageSystemBuckets.IsReservedBucketName(bucketName))
+        {
+            throw new InvalidOperationException($"Objects in '{StorageSystemBuckets.ToDisplayName(bucketName)}' cannot be deleted.");
+        }
+
         if (!await CanDeleteFromBucketAsync(bucketName, userId))
         {
             throw new UnauthorizedAccessException($"User '{userId}' cannot delete objects from bucket '{bucketName}'.");
@@ -245,9 +266,9 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task DeleteBucketAsync(string userId, string bucketName)
     {
-        if (StorageSystemBuckets.IsMyOutgoingContracts(bucketName))
+        if (StorageSystemBuckets.IsReservedBucketName(bucketName))
         {
-            throw new InvalidOperationException($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be deleted.");
+            throw new InvalidOperationException($"'{StorageSystemBuckets.ToDisplayName(bucketName)}' bucket cannot be deleted.");
         }
 
         var ownerId = await ResolveBucketOwnerIdAsync(bucketName)
@@ -667,7 +688,10 @@ public class LocalDiskStorageService : IStorageService
                 x.ObjectKey,
                 x.SharedByUser != null ? x.SharedByUser.Email ?? "Unknown" : "Unknown",
                 x.CreatedAt,
-                x.ExpiresAt))
+                x.ExpiresAt,
+                x.StorageObject != null ? x.StorageObject.SizeBytes : 0,
+                x.StorageObject != null ? x.StorageObject.UpdatedAt.UtcDateTime : DateTime.UtcNow,
+                x.StorageObject != null ? x.StorageObject.ContentType : "application/octet-stream"))
             .ToListAsync();
 
         return incoming.Where(x => x.ObjectId != Guid.Empty);

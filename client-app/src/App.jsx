@@ -48,6 +48,8 @@ const POLICY_PRESETS = {
 
 const GUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MY_OUTGOING_CONTRACTS = 'My Outgoing Contracts';
+const INCOMING_CONTRACTS = 'Incoming Contracts';
+const INCOMING_CONTRACTS_VIRTUAL_NAME = '__virtual_incoming_contracts__';
 
 const App = () => {
   const { isAuthenticated, loading, user, logout } = useAuth();
@@ -271,6 +273,7 @@ const App = () => {
   const selectedBucketMeta = accessibleBuckets.find((bucket) => bucket.id === selectedBucketId) || null;
   const selectedBucketDisplayName = selectedBucketMeta?.displayName || selectedBucketName;
   const isProtectedOutgoingBucket = selectedBucketMeta?.displayName === MY_OUTGOING_CONTRACTS;
+  const isVirtualIncomingBucket = selectedBucketMeta?.bucketName === INCOMING_CONTRACTS_VIRTUAL_NAME;
   const topSidebarBuckets = accessibleBuckets.slice(0, 5);
   const ownedBuckets = accessibleBuckets.filter((bucket) => bucket.isOwner);
   const sharedBuckets = accessibleBuckets.filter((bucket) => !bucket.isOwner);
@@ -291,6 +294,21 @@ const App = () => {
     setObjectsLoaded(false);
     setAppLoading(true);
     try {
+      if (bucket === INCOMING_CONTRACTS_VIRTUAL_NAME) {
+        const response = await storageApi.listIncomingObjectShares();
+        const virtualObjects = (response.data || []).map((item) => ({
+          id: item.objectId,
+          key: item.objectKey,
+          displayKey: `${item.sharedByEmail} / ${item.objectKey}`,
+          size: item.size,
+          lastModified: item.lastModified,
+          contentType: item.contentType,
+          sourceBucketName: item.bucketName,
+        }));
+        setObjects(virtualObjects);
+        return;
+      }
+
       const response = await storageApi.listObjects(bucket);
       setObjects(response.data);
     } catch (error) {
@@ -468,6 +486,11 @@ const App = () => {
   };
 
   const handleDeleteObject = async (key) => {
+    if (isProtectedOutgoingBucket || isVirtualIncomingBucket) {
+      alert('Objects in this contracts directory cannot be deleted.');
+      return;
+    }
+
     if (!confirm(`Delete object "${key}"?`)) return;
     try {
       await storageApi.deleteObject(selectedBucketName, key);
@@ -484,6 +507,12 @@ const App = () => {
     const file = e.target.files[0];
     if (!file || !selectedBucketName) return;
 
+    if (isProtectedOutgoingBucket || isVirtualIncomingBucket) {
+      alert('Direct upload is disabled for this contracts directory. Contracts are added through the contract workflow.');
+      e.target.value = '';
+      return;
+    }
+
     setUploadProgress(0);
     try {
       const result = await storageApi.uploadDocument(selectedBucketName, file.name, file);
@@ -498,10 +527,16 @@ const App = () => {
       alert('Upload failed');
     } finally {
       setUploadProgress(null);
+      e.target.value = '';
     }
   };
 
   const handleRegisterContract = async (obj) => {
+    if (isProtectedOutgoingBucket || isVirtualIncomingBucket) {
+      alert('PDF documents in this contracts directory cannot be registered as contracts.');
+      return;
+    }
+
     try {
       const res = await storageApi.registerPdfAsContract(selectedBucketName, obj.key, obj.key, {
         title: obj.key,
@@ -559,7 +594,8 @@ const App = () => {
       setSelectedObjectId(obj.id);
     }
 
-    const url = storageApi.getDownloadUrl(selectedBucketName, obj.key);
+    const sourceBucketName = isVirtualIncomingBucket ? obj.sourceBucketName : selectedBucketName;
+    const url = storageApi.getDownloadUrl(sourceBucketName, obj.key);
     const previewType = getPreviewType(obj.contentType);
 
     if (previewType === 'text') {
@@ -662,7 +698,13 @@ const App = () => {
                 }`}
             >
               <div className="flex items-center gap-3 overflow-hidden">
-                <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-blue-500' : 'text-slate-500'}`} />
+                {bucket.displayName === MY_OUTGOING_CONTRACTS ? (
+                  <FileText className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-emerald-400' : 'text-emerald-500/80'}`} />
+                ) : bucket.displayName === INCOMING_CONTRACTS ? (
+                  <FileText className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-amber-300' : 'text-amber-500/80'}`} />
+                ) : (
+                  <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-blue-500' : 'text-slate-500'}`} />
+                )}
                 <span className="text-sm font-medium truncate">{bucket.displayName || bucket.bucketName}</span>
                 {!bucket.isOwner && <Share2 className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="Shared with you" />}
               </div>
@@ -751,10 +793,10 @@ const App = () => {
                 >
                   <RefreshCw className={`w-5 h-5 ${appLoading ? 'animate-spin' : ''}`} />
                 </button>
-                <label className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold text-sm cursor-pointer transition-all shadow-lg shadow-blue-500/20 active:scale-95">
+                <label className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-lg active:scale-95 ${(isProtectedOutgoingBucket || isVirtualIncomingBucket) ? 'bg-slate-700/70 text-slate-300 cursor-not-allowed shadow-none' : 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer shadow-blue-500/20'}`} title={(isProtectedOutgoingBucket || isVirtualIncomingBucket) ? 'Uploads are disabled for this contracts directory' : 'Upload Object'}>
                   <Upload className="w-4 h-4" />
                   Upload Object
-                  <input type="file" className="hidden" onChange={handleFileUpload} />
+                  <input type="file" className="hidden" onChange={handleFileUpload} disabled={isProtectedOutgoingBucket || isVirtualIncomingBucket} />
                 </label>
 
                 {selectedBucketName && (
@@ -845,7 +887,16 @@ const App = () => {
                     <p className="text-sm text-slate-500">No owned buckets yet.</p>
                   ) : ownedBuckets.map((bucket) => (
                     <div key={`owned-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
-                      <span className="font-medium">{bucket.displayName || bucket.bucketName}</span>
+                      <div className="flex items-center gap-2 min-w-0">
+                        {bucket.displayName === MY_OUTGOING_CONTRACTS ? (
+                          <FileText className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                        ) : bucket.displayName === INCOMING_CONTRACTS ? (
+                          <FileText className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                        ) : (
+                          <Folder className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                        )}
+                        <span className="font-medium truncate">{bucket.displayName || bucket.bucketName}</span>
+                      </div>
                       <div className="flex items-center gap-2">
                         <button onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
                         {bucket.displayName !== MY_OUTGOING_CONTRACTS && (
@@ -933,7 +984,7 @@ const App = () => {
                               <div className="w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center">
                                 <File className="w-5 h-5 text-blue-400" />
                               </div>
-                              <span className="font-medium text-slate-200">{obj.key}</span>
+                              <span className="font-medium text-slate-200">{obj.displayKey || obj.key}</span>
                             </div>
                           </td>
                           <td className="px-6 py-4 text-sm text-slate-400">{formatSize(obj.size)}</td>
@@ -951,7 +1002,7 @@ const App = () => {
                           <td className="px-6 py-4">
                             <div className="flex items-center justify-end gap-1">
                               <a
-                                href={storageApi.getDownloadUrl(selectedBucketName, obj.key)}
+                                href={storageApi.getDownloadUrl(isVirtualIncomingBucket ? obj.sourceBucketName : selectedBucketName, obj.key)}
                                 download
                                 className="p-2 hover:bg-blue-500/10 hover:text-blue-400 rounded-lg transition-all"
                                 title="Download"
@@ -966,7 +1017,7 @@ const App = () => {
                               >
                                 <Eye className="w-4.5 h-4.5" />
                               </button>
-                              {isPdfObject(obj) && (
+                              {isPdfObject(obj) && !isProtectedOutgoingBucket && !isVirtualIncomingBucket && (
                                 <button
                                   onClick={() => openContractManager(obj)}
                                   className={`p-2 rounded-lg transition-all ${
@@ -981,7 +1032,7 @@ const App = () => {
                                     : <FilePlus className="w-4.5 h-4.5" />}
                                 </button>
                               )}
-                              {selectedBucketMeta?.isOwner && (
+                              {selectedBucketMeta?.isOwner && !isProtectedOutgoingBucket && !isVirtualIncomingBucket && (
                                 <button
                                   onClick={() => handleDeleteObject(obj.key)}
                                   className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"

@@ -48,9 +48,9 @@ public class BucketsController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(name)) return BadRequest("Bucket name is required.");
 
-        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        if (StorageSystemBuckets.IsReservedBucketName(name))
         {
-            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' is a reserved system bucket.");
+            return BadRequest($"'{StorageSystemBuckets.ToDisplayName(name)}' is a reserved system bucket.");
         }
         
         var userId = GetUserId();
@@ -61,9 +61,9 @@ public class BucketsController : ControllerBase
     [HttpDelete("{name}")]
     public async Task<IActionResult> DeleteBucket(string name)
     {
-        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        if (StorageSystemBuckets.IsReservedBucketName(name))
         {
-            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be deleted.");
+            return BadRequest($"'{StorageSystemBuckets.ToDisplayName(name)}' bucket cannot be deleted.");
         }
 
         var userId = GetUserId();
@@ -95,6 +95,11 @@ public class BucketsController : ControllerBase
     [HttpDelete("{name}/objects/{**key}")]
     public async Task<IActionResult> DeleteObject(string name, string key)
     {
+        if (StorageSystemBuckets.IsReservedBucketName(name))
+        {
+            return BadRequest($"Objects in '{StorageSystemBuckets.ToDisplayName(name)}' cannot be deleted.");
+        }
+
         var userId = GetUserId();
 
         if (!await _storage.CanDeleteFromBucketAsync(name, userId))
@@ -150,9 +155,9 @@ public class BucketsController : ControllerBase
     [HttpPost("{name}/shares")]
     public async Task<IActionResult> ShareBucketWithUser(string name, [FromBody] ShareBucketRequest request)
     {
-        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        if (StorageSystemBuckets.IsReservedBucketName(name))
         {
-            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be shared. Share objects inside it instead.");
+            return BadRequest($"'{StorageSystemBuckets.ToDisplayName(name)}' bucket cannot be shared. Share objects inside it instead.");
         }
 
         if (request == null || string.IsNullOrWhiteSpace(request.Email))
@@ -188,9 +193,9 @@ public class BucketsController : ControllerBase
     [HttpDelete("{name}/shares")]
     public async Task<IActionResult> UnshareBucketWithUser(string name, [FromQuery] string email)
     {
-        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        if (StorageSystemBuckets.IsReservedBucketName(name))
         {
-            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be shared. Share objects inside it instead.");
+            return BadRequest($"'{StorageSystemBuckets.ToDisplayName(name)}' bucket cannot be shared. Share objects inside it instead.");
         }
 
         if (string.IsNullOrWhiteSpace(email))

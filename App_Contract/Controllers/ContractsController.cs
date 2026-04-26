@@ -1,5 +1,6 @@
 using App_Contract.Contracts;
 using App_Contract.Services;
+using CradleSoft.DMS.Models;
 using Microsoft.AspNetCore.Mvc;
 
 namespace App_Contract.Controllers;
@@ -21,6 +22,11 @@ public sealed class ContractsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Bucket) || string.IsNullOrWhiteSpace(request.ObjectKey) || string.IsNullOrWhiteSpace(request.FileName))
         {
             return BadRequest("Bucket, objectKey, and fileName are required.");
+        }
+
+        if (StorageSystemBuckets.IsMyOutgoingContracts(request.Bucket))
+        {
+            return BadRequest($"PDF documents in '{StorageSystemBuckets.MyOutgoingContracts}' cannot be registered as contracts.");
         }
 
         var isPdf = string.Equals(request.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase)

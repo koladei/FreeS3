@@ -37,4 +37,4 @@ public record BucketAccessMetadata(Guid Id, string BucketName, string DisplayNam
 public record BucketShareMetadata(string SharedWithEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, string Permission);
 public record IncomingBucketShareMetadata(string BucketName, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, bool IsAcknowledged, string Permission);
 public record ObjectShareMetadata(string SharedWithEmail, DateTimeOffset SharedAt, DateTimeOffset? ExpiresAt);
-public record IncomingObjectShareMetadata(Guid ObjectId, string BucketName, string ObjectKey, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? ExpiresAt);
+public record IncomingObjectShareMetadata(Guid ObjectId, string BucketName, string ObjectKey, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? ExpiresAt, long Size, DateTime LastModified, string ContentType);
