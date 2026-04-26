@@ -19,4 +19,6 @@ public class StorageBucket
     public ApplicationUser? Owner { get; set; }
 
     public ICollection<StorageObject> Objects { get; set; } = new List<StorageObject>();
+
+    public ICollection<BucketShare> Shares { get; set; } = new List<BucketShare>();
 }

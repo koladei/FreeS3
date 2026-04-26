@@ -21,6 +21,9 @@ import {
   FilePlus,
   LogOut,
   User,
+  Share2,
+  Users,
+  Pencil,
 } from 'lucide-react';
 import { storageApi } from './api';
 import ContractManagerModal from './ContractManagerModal';
@@ -52,8 +55,9 @@ const App = () => {
 
   const [currentView, setCurrentView] = useState(() => getAuthViewFromPath()); // 'app', 'login', 'register'
 
-  const [buckets, setBuckets] = useState([]);
+  const [accessibleBuckets, setAccessibleBuckets] = useState([]);
   const [selectedBucket, setSelectedBucket] = useState(null);
+  const [activeBucketView, setActiveBucketView] = useState('objects');
   const [objects, setObjects] = useState([]);
   const [appLoading, setAppLoading] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -64,6 +68,14 @@ const App = () => {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [previewObject, setPreviewObject] = useState(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [shareTargetBucket, setShareTargetBucket] = useState(null);
+  const [shareEntries, setShareEntries] = useState([]);
+  const [shareEmail, setShareEmail] = useState('');
+  const [sharePermission, setSharePermission] = useState('ViewOnly');
+  const [shareExpiryMode, setShareExpiryMode] = useState('indefinite');
+  const [shareExpiryDateTime, setShareExpiryDateTime] = useState('');
+  const [incomingShares, setIncomingShares] = useState([]);
   // map of objectKey -> contractTemplate (populated on upload or manual register)
   const [contractTemplates, setContractTemplates] = useState({});
   const [contractTarget, setContractTarget] = useState(null);
@@ -106,15 +118,38 @@ const App = () => {
 
   const fetchBuckets = async () => {
     try {
-      const response = await storageApi.listBuckets();
-      setBuckets(response.data);
-      if (response.data.length > 0 && !selectedBucket) {
-        setSelectedBucket(response.data[0]);
+      const response = await storageApi.listAccessibleBuckets();
+      const nextBuckets = response.data || [];
+      setAccessibleBuckets(nextBuckets);
+
+      if (nextBuckets.length === 0) {
+        setSelectedBucket(null);
+        return;
+      }
+
+      if (!selectedBucket || !nextBuckets.some((bucket) => bucket.bucketName === selectedBucket)) {
+        setSelectedBucket(nextBuckets[0].bucketName);
       }
     } catch (error) {
       console.error('Failed to fetch buckets', error);
     }
   };
+
+  const selectedBucketMeta = accessibleBuckets.find((bucket) => bucket.bucketName === selectedBucket) || null;
+  const topSidebarBuckets = accessibleBuckets.slice(0, 5);
+  const ownedBuckets = accessibleBuckets.filter((bucket) => bucket.isOwner);
+  const sharedBuckets = accessibleBuckets.filter((bucket) => !bucket.isOwner);
+  const pendingIncomingShares = incomingShares.filter((share) => !share.isAcknowledged);
+
+  const fetchIncomingShares = useCallback(async () => {
+    try {
+      const response = await storageApi.listIncomingShares();
+      setIncomingShares(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch incoming shares', error);
+      setIncomingShares([]);
+    }
+  }, []);
 
   const fetchObjects = useCallback(async (bucket) => {
     if (!bucket) return;
@@ -135,7 +170,8 @@ const App = () => {
     }
 
     fetchBuckets();
-  }, [isAuthenticated, currentView]);
+    fetchIncomingShares();
+  }, [isAuthenticated, currentView, fetchIncomingShares]);
 
   useEffect(() => {
     if (isAuthenticated && currentView === 'app' && selectedBucket) {
@@ -164,6 +200,80 @@ const App = () => {
       fetchBuckets();
     } catch (error) {
       alert('Failed to delete bucket');
+    }
+  };
+
+  const openShareModal = async (bucketName) => {
+    setShareTargetBucket(bucketName);
+    setShareEmail('');
+    setSharePermission('ViewOnly');
+    setShareExpiryMode('indefinite');
+    setShareExpiryDateTime('');
+    setIsShareModalOpen(true);
+    try {
+      const response = await storageApi.listBucketShares(bucketName);
+      setShareEntries(response.data || []);
+    } catch (error) {
+      setShareEntries([]);
+      alert('Failed to load shared users for this bucket.');
+    }
+  };
+
+  const handleShareBucket = async () => {
+    if (!shareTargetBucket || !shareEmail.trim() || !sharePermission) {
+      return;
+    }
+
+    let expiresAt = null;
+    if (shareExpiryMode === 'expires') {
+      if (!shareExpiryDateTime) {
+        alert('Select an expiration date and time or choose indefinite access.');
+        return;
+      }
+
+      const parsedDate = new Date(shareExpiryDateTime);
+      if (Number.isNaN(parsedDate.getTime())) {
+        alert('Invalid expiration date and time.');
+        return;
+      }
+
+      expiresAt = parsedDate.toISOString();
+    }
+
+    try {
+      await storageApi.shareBucketWithEmail(shareTargetBucket, shareEmail.trim(), sharePermission, expiresAt);
+      const response = await storageApi.listBucketShares(shareTargetBucket);
+      setShareEntries(response.data || []);
+      setShareEmail('');
+      setSharePermission('ViewOnly');
+      setShareExpiryMode('indefinite');
+      setShareExpiryDateTime('');
+    } catch (error) {
+      alert(error?.response?.data || 'Failed to share bucket with this email.');
+    }
+  };
+
+  const handleUnshareBucket = async (email) => {
+    if (!shareTargetBucket) {
+      return;
+    }
+
+    try {
+      await storageApi.unshareBucketWithEmail(shareTargetBucket, email);
+      const response = await storageApi.listBucketShares(shareTargetBucket);
+      setShareEntries(response.data || []);
+    } catch (error) {
+      alert(error?.response?.data || 'Failed to remove bucket share.');
+    }
+  };
+
+  const handleAcknowledgeShare = async (bucketName) => {
+    try {
+      await storageApi.acknowledgeShare(bucketName);
+      await fetchIncomingShares();
+      await fetchBuckets();
+    } catch (error) {
+      alert(error?.response?.data || 'Failed to acknowledge share.');
     }
   };
 
@@ -369,39 +479,60 @@ const App = () => {
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 space-y-1 custom-scrollbar">
-          {buckets.map((bucket) => (
+          {topSidebarBuckets.map((bucket) => (
             <div
-              key={bucket}
-              onClick={() => setSelectedBucket(bucket)}
-              className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${selectedBucket === bucket
+              key={bucket.bucketName}
+              onClick={() => {
+                setSelectedBucket(bucket.bucketName);
+                setActiveBucketView('objects');
+              }}
+              className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${selectedBucket === bucket.bucketName
                   ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20'
                   : 'hover:bg-premium-card text-slate-400 border border-transparent'
                 }`}
             >
               <div className="flex items-center gap-3 overflow-hidden">
-                <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucket === bucket ? 'text-blue-500' : 'text-slate-500'}`} />
-                <span className="text-sm font-medium truncate">{bucket}</span>
+                <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucket === bucket.bucketName ? 'text-blue-500' : 'text-slate-500'}`} />
+                <span className="text-sm font-medium truncate">{bucket.bucketName}</span>
+                {!bucket.isOwner && <Share2 className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="Shared with you" />}
               </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                <button
-                  onClick={(e) => { e.stopPropagation(); openPolicyModal(bucket); }}
-                  className="p-1.5 hover:bg-blue-500/10 hover:text-blue-400 rounded-lg transition-all"
-                  title="Bucket Policy"
-                >
-                  <Shield className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDeleteBucket(bucket); }}
-                  className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {bucket.isOwner && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openShareModal(bucket.bucketName); }}
+                      className="p-1.5 hover:bg-amber-500/10 hover:text-amber-400 rounded-lg transition-all"
+                      title="Share Bucket"
+                    >
+                      <Users className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openPolicyModal(bucket.bucketName); }}
+                      className="p-1.5 hover:bg-blue-500/10 hover:text-blue-400 rounded-lg transition-all"
+                      title="Bucket Policy"
+                    >
+                      <Shield className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDeleteBucket(bucket.bucketName); }}
+                      className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ))}
         </div>
 
-        <div className="p-4 border-t border-premium-border glass">
+        <div className="p-4 border-t border-premium-border glass space-y-2">
+          <button
+            onClick={() => setActiveBucketView('all')}
+            className="w-full py-2 px-3 bg-premium-card hover:bg-premium-border border border-premium-border rounded-xl text-xs font-semibold uppercase tracking-wide"
+          >
+            View All Buckets
+          </button>
           <div className="flex items-center gap-3 text-slate-500">
             <HardDrive className="w-4 h-4" />
             <span className="text-xs font-medium">Storage Root: App_Data</span>
@@ -415,33 +546,90 @@ const App = () => {
         <header className="h-20 glass border-b border-premium-border flex items-center justify-between px-8 z-10">
           <div className="flex items-center gap-4">
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              {selectedBucket || 'Select a Bucket'}
-              {selectedBucket && <span className="text-slate-600 font-normal">/</span>}
+              {activeBucketView === 'all' ? 'All Buckets' : (selectedBucket || 'Select a Bucket')}
+              {activeBucketView !== 'all' && selectedBucket && <span className="text-slate-600 font-normal">/</span>}
+              {activeBucketView !== 'all' && selectedBucketMeta && !selectedBucketMeta.isOwner && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold uppercase tracking-wide">
+                  Shared
+                </span>
+              )}
             </h2>
-            <div className="relative group">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Search objects..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-premium-card border border-premium-border rounded-lg pl-10 pr-4 py-1.5 text-sm focus:outline-none focus:border-blue-500/50 w-64 transition-all"
-              />
-            </div>
+            {activeBucketView !== 'all' && (
+              <div className="relative group">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Search objects..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="bg-premium-card border border-premium-border rounded-lg pl-10 pr-4 py-1.5 text-sm focus:outline-none focus:border-blue-500/50 w-64 transition-all"
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => fetchObjects(selectedBucket)}
-              className="p-2.5 hover:bg-premium-card rounded-xl border border-transparent hover:border-premium-border transition-all"
-            >
-              <RefreshCw className={`w-5 h-5 ${appLoading ? 'animate-spin' : ''}`} />
-            </button>
-            <label className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold text-sm cursor-pointer transition-all shadow-lg shadow-blue-500/20 active:scale-95">
-              <Upload className="w-4 h-4" />
-              Upload Object
-              <input type="file" className="hidden" onChange={handleFileUpload} />
-            </label>
+            {activeBucketView !== 'all' && (
+              <>
+                <button
+                  onClick={() => fetchObjects(selectedBucket)}
+                  className="p-2.5 hover:bg-premium-card rounded-xl border border-transparent hover:border-premium-border transition-all"
+                >
+                  <RefreshCw className={`w-5 h-5 ${appLoading ? 'animate-spin' : ''}`} />
+                </button>
+                <label className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold text-sm cursor-pointer transition-all shadow-lg shadow-blue-500/20 active:scale-95">
+                  <Upload className="w-4 h-4" />
+                  Upload Object
+                  <input type="file" className="hidden" onChange={handleFileUpload} />
+                </label>
+
+                {selectedBucket && (
+                  <div className="inline-flex items-center gap-1 p-1 border border-premium-border rounded-xl bg-premium-card/50">
+                    {selectedBucketMeta?.isOwner ? (
+                      <>
+                        <button
+                          onClick={() => openShareModal(selectedBucket)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-amber-500/15 text-amber-300 text-xs font-semibold uppercase tracking-wide"
+                          title="Share / Unshare"
+                        >
+                          <Users className="w-3.5 h-3.5" />
+                          Share
+                        </button>
+                        <button
+                          onClick={() => openPolicyModal(selectedBucket)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-blue-500/15 text-blue-300 text-xs font-semibold uppercase tracking-wide"
+                          title="Bucket Policy"
+                        >
+                          <Shield className="w-3.5 h-3.5" />
+                          Policy
+                        </button>
+                        <button
+                          onClick={() => handleDeleteBucket(selectedBucket)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-red-500/15 text-red-300 text-xs font-semibold uppercase tracking-wide"
+                          title="Delete Bucket"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Delete
+                        </button>
+                        <button
+                          disabled
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-slate-500 text-xs font-semibold uppercase tracking-wide cursor-not-allowed"
+                          title="Rename is not implemented yet"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          Rename
+                        </button>
+                      </>
+                    ) : (
+                      <div className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-slate-400">
+                        <Share2 className="w-3.5 h-3.5 text-amber-400" />
+                        Shared bucket permissions are managed by the owner.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
               <div className="flex items-center gap-4 ml-4 pl-4 border-l border-premium-border">
                 <div className="flex items-center gap-2">
                   <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center">
@@ -465,7 +653,72 @@ const App = () => {
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
-          {!selectedBucket ? (
+          {activeBucketView === 'all' ? (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-2xl font-bold">All Buckets</h3>
+                <span className="text-xs uppercase tracking-widest text-slate-500">Grouped by ownership</span>
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <section className="glass rounded-2xl border border-premium-border p-5 space-y-3">
+                  <h4 className="text-sm font-semibold uppercase tracking-wide text-blue-300">Owned by you</h4>
+                  {ownedBuckets.length === 0 ? (
+                    <p className="text-sm text-slate-500">No owned buckets yet.</p>
+                  ) : ownedBuckets.map((bucket) => (
+                    <div key={`owned-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
+                      <span className="font-medium">{bucket.bucketName}</span>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => { setSelectedBucket(bucket.bucketName); setActiveBucketView('objects'); }} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
+                        <button onClick={() => openShareModal(bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300">Manage Shares</button>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+
+                <section className="glass rounded-2xl border border-premium-border p-5 space-y-3">
+                  <h4 className="text-sm font-semibold uppercase tracking-wide text-amber-300">Shared with you</h4>
+                  {sharedBuckets.length === 0 ? (
+                    <p className="text-sm text-slate-500">No shared buckets yet.</p>
+                  ) : sharedBuckets.map((bucket) => (
+                    <div key={`shared-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
+                      <div className="flex items-center gap-2">
+                        <Share2 className="w-4 h-4 text-amber-400" />
+                        <span className="font-medium">{bucket.bucketName}</span>
+                      </div>
+                      <button onClick={() => { setSelectedBucket(bucket.bucketName); setActiveBucketView('objects'); }} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
+                    </div>
+                  ))}
+                </section>
+              </div>
+
+              <section className="glass rounded-2xl border border-premium-border p-5 space-y-3">
+                <h4 className="text-sm font-semibold uppercase tracking-wide text-emerald-300">Pending share acknowledgments</h4>
+                {pendingIncomingShares.length === 0 ? (
+                  <p className="text-sm text-slate-500">No pending share requests.</p>
+                ) : pendingIncomingShares.map((share) => (
+                  <div key={`incoming-${share.bucketName}-${share.sharedByEmail}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40 gap-3">
+                    <div>
+                      <p className="font-medium">{share.bucketName}</p>
+                      <p className="text-xs text-slate-500">From {share.sharedByEmail} • Shared {new Date(share.sharedAt).toLocaleString()}</p>
+                      <p className="text-xs text-slate-500">
+                        Permission: {share.permission}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {share.expiresAt ? `Expires ${new Date(share.expiresAt).toLocaleString()}` : 'No expiration'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleAcknowledgeShare(share.bucketName)}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300"
+                    >
+                      Acknowledge
+                    </button>
+                  </div>
+                ))}
+              </section>
+            </div>
+          ) : !selectedBucket ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-4">
               <div className="w-20 h-20 rounded-3xl bg-premium-card flex items-center justify-center border border-premium-border">
                 <Database className="w-10 h-10 opacity-20" />
@@ -548,13 +801,15 @@ const App = () => {
                                     : <FilePlus className="w-4.5 h-4.5" />}
                                 </button>
                               )}
-                              <button
-                                onClick={() => handleDeleteObject(obj.key)}
-                                className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-4.5 h-4.5" />
-                              </button>
+                              {selectedBucketMeta?.isOwner && (
+                                <button
+                                  onClick={() => handleDeleteObject(obj.key)}
+                                  className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="w-4.5 h-4.5" />
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -741,6 +996,115 @@ const App = () => {
                   </video>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isShareModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsShareModalOpen(false)}></div>
+          <div className="glass w-full max-w-xl rounded-2xl border border-premium-border shadow-2xl relative animate-in fade-in zoom-in duration-200 flex flex-col max-h-[85vh]">
+            <div className="p-6 border-b border-premium-border flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold">Share Bucket</h3>
+                <p className="text-xs text-slate-500 mt-1">{shareTargetBucket}</p>
+              </div>
+              <button onClick={() => setIsShareModalOpen(false)} className="text-slate-500 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 border-b border-premium-border space-y-3">
+              <label className="block text-xs uppercase tracking-wider text-slate-500">Share with user email</label>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={shareEmail}
+                  onChange={(e) => setShareEmail(e.target.value)}
+                  placeholder="user@example.com"
+                  className="flex-1 bg-premium-dark border border-premium-border rounded-xl px-4 py-2.5 focus:outline-none focus:border-blue-500"
+                />
+                <button
+                  onClick={handleShareBucket}
+                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-semibold"
+                >
+                  Share
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-wider text-slate-500">Permission</p>
+                <select
+                  value={sharePermission}
+                  onChange={(e) => setSharePermission(e.target.value)}
+                  className="w-full bg-premium-dark border border-premium-border rounded-xl px-4 py-2.5 focus:outline-none focus:border-blue-500"
+                >
+                  <option value="ViewOnly">ViewOnly (view objects only)</option>
+                  <option value="Modify">Modify (view, upload, delete)</option>
+                  <option value="ModifyOnly">ModifyOnly (view, upload, no delete)</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-wider text-slate-500">Access duration</p>
+                <div className="flex items-center gap-5 text-sm">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="share-expiry"
+                      checked={shareExpiryMode === 'indefinite'}
+                      onChange={() => setShareExpiryMode('indefinite')}
+                    />
+                    Indefinite
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="share-expiry"
+                      checked={shareExpiryMode === 'expires'}
+                      onChange={() => setShareExpiryMode('expires')}
+                    />
+                    Expires at
+                  </label>
+                </div>
+                {shareExpiryMode === 'expires' && (
+                  <input
+                    type="datetime-local"
+                    value={shareExpiryDateTime}
+                    onChange={(e) => setShareExpiryDateTime(e.target.value)}
+                    className="w-full bg-premium-dark border border-premium-border rounded-xl px-4 py-2.5 focus:outline-none focus:border-blue-500"
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="p-6 overflow-auto custom-scrollbar space-y-2">
+              {shareEntries.length === 0 ? (
+                <p className="text-sm text-slate-500">No users have access to this bucket yet.</p>
+              ) : shareEntries.map((entry) => (
+                <div key={entry.sharedWithEmail} className="flex items-center justify-between p-3 rounded-xl border border-premium-border bg-premium-card/40">
+                  <div>
+                    <p className="font-medium text-sm">{entry.sharedWithEmail}</p>
+                    <p className="text-xs text-slate-500">Shared {new Date(entry.sharedAt).toLocaleString()}</p>
+                    <p className="text-xs text-slate-500">Permission: {entry.permission}</p>
+                    <p className="text-xs text-slate-500">
+                      {entry.expiresAt ? `Expires ${new Date(entry.expiresAt).toLocaleString()}` : 'No expiration'}
+                    </p>
+                    <p className={`text-xs ${entry.acknowledgedAt ? 'text-emerald-300' : 'text-amber-300'}`}>
+                      {entry.acknowledgedAt
+                        ? `Acknowledged ${new Date(entry.acknowledgedAt).toLocaleString()}`
+                        : 'Pending acknowledgment'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleUnshareBucket(entry.sharedWithEmail)}
+                    className="px-3 py-1.5 rounded-lg text-xs bg-red-600/20 hover:bg-red-600/30 text-red-300"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </div>

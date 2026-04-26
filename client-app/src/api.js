@@ -68,8 +68,14 @@ const isPdfAsset = (file, key = '') => {
 export const storageApi = {
   // Buckets
   listBuckets: () => s3Api.get('/buckets'),
+  listAccessibleBuckets: () => s3Api.get('/buckets/access'),
   createBucket: (name) => s3Api.post(`/buckets/${name}`),
   deleteBucket: (name) => s3Api.delete(`/buckets/${name}`),
+  listBucketShares: (name) => s3Api.get(`/buckets/${name}/shares`),
+  listIncomingShares: () => s3Api.get('/buckets/shares/incoming'),
+  acknowledgeShare: (name) => s3Api.post(`/buckets/${name}/shares/acknowledge`),
+  shareBucketWithEmail: (name, email, permission, expiresAt = null) => s3Api.post(`/buckets/${name}/shares`, { email, permission, expiresAt }),
+  unshareBucketWithEmail: (name, email) => s3Api.delete(`/buckets/${name}/shares`, { params: { email } }),
   
   // Policies
   getBucketPolicy: (name) => s3Api.get(`/buckets/${name}/policy`),

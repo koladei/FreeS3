@@ -42,8 +42,8 @@ public class FilesController : ControllerBase
         var userId = GetUserId();
         var bucketName = bucket ?? _configuration["S3Settings:BucketName"] ?? "default";
         
-        // Check if user has access to the bucket
-        if (!await _storageService.UserHasAccessToBucketAsync(bucketName, userId))
+        // Check if user can upload to the bucket.
+        if (!await _storageService.CanUploadToBucketAsync(bucketName, userId))
         {
             return Forbid();
         }

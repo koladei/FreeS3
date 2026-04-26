@@ -45,8 +45,8 @@ public class ObjectsController : ControllerBase
     {
         var userId = GetUserId();
         
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        // Check if user can upload to the bucket
+        if (!await _storage.CanUploadToBucketAsync(bucketName, userId))
         {
             return Forbid();
         }

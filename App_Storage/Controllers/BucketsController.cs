@@ -4,6 +4,7 @@ using CradleSoft.DMS.Services;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Security.Claims;
+using System;
 
 namespace CradleSoft.DMS.App_Storage.Controllers;
 
@@ -33,6 +34,14 @@ public class BucketsController : ControllerBase
         return Ok(buckets);
     }
 
+    [HttpGet("access")]
+    public async Task<ActionResult<IEnumerable<BucketAccessMetadata>>> GetAccessibleBuckets()
+    {
+        var userId = GetUserId();
+        var buckets = await _storage.ListAccessibleBucketsAsync(userId);
+        return Ok(buckets);
+    }
+
     [HttpPost("{name}")]
     public async Task<IActionResult> CreateBucket(string name)
     {
@@ -47,9 +56,8 @@ public class BucketsController : ControllerBase
     public async Task<IActionResult> DeleteBucket(string name)
     {
         var userId = GetUserId();
-        
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(name, userId))
+
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
         {
             return Forbid();
         }
@@ -77,9 +85,8 @@ public class BucketsController : ControllerBase
     public async Task<IActionResult> DeleteObject(string name, string key)
     {
         var userId = GetUserId();
-        
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(name, userId))
+
+        if (!await _storage.CanDeleteFromBucketAsync(name, userId))
         {
             return Forbid();
         }
@@ -92,9 +99,8 @@ public class BucketsController : ControllerBase
     public async Task<ActionResult<string>> GetPolicy(string name)
     {
         var userId = GetUserId();
-        
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(name, userId))
+
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
         {
             return Forbid();
         }
@@ -107,14 +113,112 @@ public class BucketsController : ControllerBase
     public async Task<IActionResult> SetPolicy(string name, [FromBody] string policyJson)
     {
         var userId = GetUserId();
-        
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(name, userId))
+
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
         {
             return Forbid();
         }
 
         await _storage.SetBucketPolicyAsync(userId, name, policyJson);
         return Ok();
+    }
+
+    [HttpGet("{name}/shares")]
+    public async Task<ActionResult<IEnumerable<BucketShareMetadata>>> GetBucketShares(string name)
+    {
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var shares = await _storage.ListBucketSharesAsync(userId, name);
+        return Ok(shares);
+    }
+
+    [HttpPost("{name}/shares")]
+    public async Task<IActionResult> ShareBucketWithUser(string name, [FromBody] ShareBucketRequest request)
+    {
+        if (request == null || string.IsNullOrWhiteSpace(request.Email))
+        {
+            return BadRequest("Email is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Permission))
+        {
+            return BadRequest("Permission is required. Use ViewOnly, Modify, or ModifyOnly.");
+        }
+
+        if (request.ExpiresAt.HasValue && request.ExpiresAt.Value <= DateTimeOffset.UtcNow)
+        {
+            return BadRequest("Expiration must be in the future.");
+        }
+
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var shared = await _storage.ShareBucketWithUserByEmailAsync(userId, name, request.Email, request.Permission, request.ExpiresAt);
+        if (!shared)
+        {
+            return NotFound("Unable to share bucket. Ensure email exists, permission is valid, and expiration (if set) is in the future.");
+        }
+
+        return Ok();
+    }
+
+    [HttpDelete("{name}/shares")]
+    public async Task<IActionResult> UnshareBucketWithUser(string name, [FromQuery] string email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return BadRequest("Email is required.");
+        }
+
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var removed = await _storage.UnshareBucketWithUserByEmailAsync(userId, name, email);
+        if (!removed)
+        {
+            return NotFound("Share entry not found for the provided email.");
+        }
+
+        return Ok();
+    }
+
+    [HttpGet("shares/incoming")]
+    public async Task<ActionResult<IEnumerable<IncomingBucketShareMetadata>>> GetIncomingShares()
+    {
+        var userId = GetUserId();
+        var shares = await _storage.ListIncomingBucketSharesAsync(userId);
+        return Ok(shares);
+    }
+
+    [HttpPost("{name}/shares/acknowledge")]
+    public async Task<IActionResult> AcknowledgeShare(string name)
+    {
+        var userId = GetUserId();
+        var acknowledged = await _storage.AcknowledgeBucketShareAsync(userId, name);
+        if (!acknowledged)
+        {
+            return NotFound("Share request not found or has expired.");
+        }
+
+        return Ok();
+    }
+
+    public sealed class ShareBucketRequest
+    {
+        public string Email { get; set; } = string.Empty;
+
+        public string Permission { get; set; } = "ViewOnly";
+
+        public DateTimeOffset? ExpiresAt { get; set; }
     }
 }
