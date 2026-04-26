@@ -1,6 +1,0 @@
-<Solution>
-  <Project Path="S3Server/S3Server.csproj" />
-  <Project Path="Common/Data/Data.csproj" />
-  <Project Path="Common/Models/Models.csproj" />
-  <Project Path="Common/Services/Services.csproj" />
-</Solution>
