@@ -411,6 +411,55 @@ namespace CradleSoft.DMS.Data.Migrations
                     b.ToTable("ContractTemplates");
                 });
 
+            modelBuilder.Entity("CradleSoft.DMS.Models.ObjectShare", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("BucketName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ObjectKey")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<string>("SharedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("SharedWithUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<long>("StorageObjectId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SharedByUserId");
+
+                    b.HasIndex("SharedWithUserId");
+
+                    b.HasIndex("StorageObjectId", "SharedWithUserId")
+                        .IsUnique();
+
+                    b.ToTable("ObjectShares");
+                });
+
             modelBuilder.Entity("CradleSoft.DMS.Models.RefreshToken", b =>
                 {
                     b.Property<int>("Id")
@@ -765,6 +814,33 @@ namespace CradleSoft.DMS.Data.Migrations
                     b.Navigation("Instance");
                 });
 
+            modelBuilder.Entity("CradleSoft.DMS.Models.ObjectShare", b =>
+                {
+                    b.HasOne("CradleSoft.DMS.Models.ApplicationUser", "SharedByUser")
+                        .WithMany()
+                        .HasForeignKey("SharedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CradleSoft.DMS.Models.ApplicationUser", "SharedWithUser")
+                        .WithMany()
+                        .HasForeignKey("SharedWithUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("CradleSoft.DMS.Models.StorageObject", "StorageObject")
+                        .WithMany("Shares")
+                        .HasForeignKey("StorageObjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SharedByUser");
+
+                    b.Navigation("SharedWithUser");
+
+                    b.Navigation("StorageObject");
+                });
+
             modelBuilder.Entity("CradleSoft.DMS.Models.RefreshToken", b =>
                 {
                     b.HasOne("CradleSoft.DMS.Models.ApplicationUser", "User")
@@ -866,6 +942,11 @@ namespace CradleSoft.DMS.Data.Migrations
                 {
                     b.Navigation("Objects");
 
+                    b.Navigation("Shares");
+                });
+
+            modelBuilder.Entity("CradleSoft.DMS.Models.StorageObject", b =>
+                {
                     b.Navigation("Shares");
                 });
 #pragma warning restore 612, 618

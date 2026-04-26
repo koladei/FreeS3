@@ -21,4 +21,6 @@ public class StorageObject
     public DateTimeOffset UpdatedAt { get; set; }
 
     public StorageBucket? Bucket { get; set; }
+
+    public ICollection<ObjectShare> Shares { get; set; } = new List<ObjectShare>();
 }

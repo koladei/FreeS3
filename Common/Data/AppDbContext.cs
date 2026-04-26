@@ -31,6 +31,8 @@ namespace CradleSoft.DMS.Data
 
     public DbSet<BucketShare> BucketShares { get; set; }
 
+    public DbSet<ObjectShare> ObjectShares { get; set; }
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
       base.OnModelCreating(builder);
@@ -172,6 +174,35 @@ namespace CradleSoft.DMS.Data
         entity.HasOne(x => x.Bucket)
           .WithMany(x => x.Shares)
           .HasForeignKey(x => x.BucketId)
+          .OnDelete(DeleteBehavior.Cascade);
+
+        entity.HasOne(x => x.SharedByUser)
+          .WithMany()
+          .HasForeignKey(x => x.SharedByUserId)
+          .OnDelete(DeleteBehavior.Restrict);
+
+        entity.HasOne(x => x.SharedWithUser)
+          .WithMany()
+          .HasForeignKey(x => x.SharedWithUserId)
+          .OnDelete(DeleteBehavior.Restrict);
+      });
+
+      builder.Entity<ObjectShare>(entity =>
+      {
+        entity.HasKey(x => x.Id);
+        entity.Property(x => x.StorageObjectId).IsRequired();
+        entity.Property(x => x.BucketName).HasMaxLength(255).IsRequired();
+        entity.Property(x => x.ObjectKey).HasMaxLength(1024).IsRequired();
+        entity.Property(x => x.SharedByUserId).HasMaxLength(450).IsRequired();
+        entity.Property(x => x.SharedWithUserId).HasMaxLength(450).IsRequired();
+        entity.Property(x => x.ExpiresAt);
+
+        entity.HasIndex(x => new { x.StorageObjectId, x.SharedWithUserId }).IsUnique();
+        entity.HasIndex(x => x.SharedWithUserId);
+
+        entity.HasOne(x => x.StorageObject)
+          .WithMany(x => x.Shares)
+          .HasForeignKey(x => x.StorageObjectId)
           .OnDelete(DeleteBehavior.Cascade);
 
         entity.HasOne(x => x.SharedByUser)

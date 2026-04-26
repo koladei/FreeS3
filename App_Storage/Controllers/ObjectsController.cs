@@ -79,8 +79,8 @@ public class ObjectsController : ControllerBase
 
         var userId = GetUserId();
         
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        // Check if user can access the object via ownership, bucket share, or object share.
+        if (!await _storage.UserHasAccessToObjectAsync(bucketName, key, userId))
         {
             return Forbid();
         }
@@ -110,8 +110,8 @@ public class ObjectsController : ControllerBase
 
         var userId = GetUserId();
         
-        // Check if user owns the bucket
-        if (!await _storage.UserHasAccessToBucketAsync(bucketName, userId))
+        // Check if user can access the object via ownership, bucket share, or object share.
+        if (!await _storage.UserHasAccessToObjectAsync(bucketName, key, userId))
         {
             return Forbid();
         }

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Security.Claims;
 using System;
+using CradleSoft.DMS.Models;
 
 namespace CradleSoft.DMS.App_Storage.Controllers;
 
@@ -46,6 +47,11 @@ public class BucketsController : ControllerBase
     public async Task<IActionResult> CreateBucket(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return BadRequest("Bucket name is required.");
+
+        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        {
+            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' is a reserved system bucket.");
+        }
         
         var userId = GetUserId();
         await _storage.EnsureBucketExistsAsync(name, userId);
@@ -55,6 +61,11 @@ public class BucketsController : ControllerBase
     [HttpDelete("{name}")]
     public async Task<IActionResult> DeleteBucket(string name)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        {
+            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be deleted.");
+        }
+
         var userId = GetUserId();
 
         if (!await _storage.UserOwnsBucketAsync(name, userId))
@@ -139,6 +150,11 @@ public class BucketsController : ControllerBase
     [HttpPost("{name}/shares")]
     public async Task<IActionResult> ShareBucketWithUser(string name, [FromBody] ShareBucketRequest request)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        {
+            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be shared. Share objects inside it instead.");
+        }
+
         if (request == null || string.IsNullOrWhiteSpace(request.Email))
         {
             return BadRequest("Email is required.");
@@ -172,6 +188,11 @@ public class BucketsController : ControllerBase
     [HttpDelete("{name}/shares")]
     public async Task<IActionResult> UnshareBucketWithUser(string name, [FromQuery] string email)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(name))
+        {
+            return BadRequest($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be shared. Share objects inside it instead.");
+        }
+
         if (string.IsNullOrWhiteSpace(email))
         {
             return BadRequest("Email is required.");
@@ -213,11 +234,97 @@ public class BucketsController : ControllerBase
         return Ok();
     }
 
+    [HttpGet("{name}/object-shares")]
+    public async Task<ActionResult<IEnumerable<ObjectShareMetadata>>> GetObjectShares(string name, [FromQuery] string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return BadRequest("Object key is required.");
+        }
+
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var shares = await _storage.ListObjectSharesAsync(userId, name, key);
+        return Ok(shares);
+    }
+
+    [HttpPost("{name}/object-shares")]
+    public async Task<IActionResult> ShareObjectWithUser(string name, [FromBody] ShareObjectRequest request)
+    {
+        if (request == null || string.IsNullOrWhiteSpace(request.Key) || string.IsNullOrWhiteSpace(request.Email))
+        {
+            return BadRequest("Object key and email are required.");
+        }
+
+        if (request.ExpiresAt.HasValue && request.ExpiresAt.Value <= DateTimeOffset.UtcNow)
+        {
+            return BadRequest("Expiration must be in the future.");
+        }
+
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var shared = await _storage.ShareObjectWithUserByEmailAsync(userId, name, request.Key, request.Email, request.ExpiresAt);
+        if (!shared)
+        {
+            return NotFound("Unable to share object. Ensure object exists, email exists, and expiration (if set) is in the future.");
+        }
+
+        return Ok();
+    }
+
+    [HttpDelete("{name}/object-shares")]
+    public async Task<IActionResult> UnshareObjectWithUser(string name, [FromQuery] string key, [FromQuery] string email)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(email))
+        {
+            return BadRequest("Object key and email are required.");
+        }
+
+        var userId = GetUserId();
+        if (!await _storage.UserOwnsBucketAsync(name, userId))
+        {
+            return Forbid();
+        }
+
+        var removed = await _storage.UnshareObjectWithUserByEmailAsync(userId, name, key, email);
+        if (!removed)
+        {
+            return NotFound("Object share entry not found for the provided key/email.");
+        }
+
+        return Ok();
+    }
+
+    [HttpGet("object-shares/incoming")]
+    public async Task<ActionResult<IEnumerable<IncomingObjectShareMetadata>>> GetIncomingObjectShares()
+    {
+        var userId = GetUserId();
+        var shares = await _storage.ListIncomingObjectSharesAsync(userId);
+        return Ok(shares);
+    }
+
     public sealed class ShareBucketRequest
     {
         public string Email { get; set; } = string.Empty;
 
         public string Permission { get; set; } = "ViewOnly";
+
+        public DateTimeOffset? ExpiresAt { get; set; }
+    }
+
+    public sealed class ShareObjectRequest
+    {
+        public string Key { get; set; } = string.Empty;
+
+        public string Email { get; set; } = string.Empty;
 
         public DateTimeOffset? ExpiresAt { get; set; }
     }

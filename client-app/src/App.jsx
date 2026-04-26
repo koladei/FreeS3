@@ -47,6 +47,7 @@ const POLICY_PRESETS = {
 };
 
 const GUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MY_OUTGOING_CONTRACTS = 'My Outgoing Contracts';
 
 const App = () => {
   const { isAuthenticated, loading, user, logout } = useAuth();
@@ -268,6 +269,8 @@ const App = () => {
   };
 
   const selectedBucketMeta = accessibleBuckets.find((bucket) => bucket.id === selectedBucketId) || null;
+  const selectedBucketDisplayName = selectedBucketMeta?.displayName || selectedBucketName;
+  const isProtectedOutgoingBucket = selectedBucketMeta?.displayName === MY_OUTGOING_CONTRACTS;
   const topSidebarBuckets = accessibleBuckets.slice(0, 5);
   const ownedBuckets = accessibleBuckets.filter((bucket) => bucket.isOwner);
   const sharedBuckets = accessibleBuckets.filter((bucket) => !bucket.isOwner);
@@ -660,19 +663,21 @@ const App = () => {
             >
               <div className="flex items-center gap-3 overflow-hidden">
                 <Folder className={`w-5 h-5 flex-shrink-0 ${selectedBucketId === bucket.id ? 'text-blue-500' : 'text-slate-500'}`} />
-                <span className="text-sm font-medium truncate">{bucket.bucketName}</span>
+                <span className="text-sm font-medium truncate">{bucket.displayName || bucket.bucketName}</span>
                 {!bucket.isOwner && <Share2 className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="Shared with you" />}
               </div>
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
                 {bucket.isOwner && (
                   <>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openShareModal(bucket.bucketName); }}
-                      className="p-1.5 hover:bg-amber-500/10 hover:text-amber-400 rounded-lg transition-all"
-                      title="Share Bucket"
-                    >
-                      <Users className="w-4 h-4" />
-                    </button>
+                    {bucket.displayName !== MY_OUTGOING_CONTRACTS && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openShareModal(bucket.bucketName); }}
+                        className="p-1.5 hover:bg-amber-500/10 hover:text-amber-400 rounded-lg transition-all"
+                        title="Share Bucket"
+                      >
+                        <Users className="w-4 h-4" />
+                      </button>
+                    )}
                     <button
                       onClick={(e) => { e.stopPropagation(); openPolicyModal(bucket.bucketName); }}
                       className="p-1.5 hover:bg-blue-500/10 hover:text-blue-400 rounded-lg transition-all"
@@ -680,12 +685,14 @@ const App = () => {
                     >
                       <Shield className="w-4 h-4" />
                     </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteBucket(bucket.bucketName); }}
-                      className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {bucket.displayName !== MY_OUTGOING_CONTRACTS && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteBucket(bucket.bucketName); }}
+                        className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-all"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -713,8 +720,8 @@ const App = () => {
         <header className="h-20 glass border-b border-premium-border flex items-center justify-between px-8 z-10">
           <div className="flex items-center gap-4">
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              {activeBucketView === 'all' ? 'All Buckets' : (selectedBucketName || 'Select a Bucket')}
-              {activeBucketView !== 'all' && selectedBucketName && <span className="text-slate-600 font-normal">/</span>}
+              {activeBucketView === 'all' ? 'All Buckets' : (selectedBucketDisplayName || 'Select a Bucket')}
+              {activeBucketView !== 'all' && selectedBucketDisplayName && <span className="text-slate-600 font-normal">/</span>}
               {activeBucketView !== 'all' && selectedBucketMeta && !selectedBucketMeta.isOwner && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold uppercase tracking-wide">
                   Shared
@@ -754,14 +761,16 @@ const App = () => {
                   <div className="inline-flex items-center gap-1 p-1 border border-premium-border rounded-xl bg-premium-card/50">
                     {selectedBucketMeta?.isOwner ? (
                       <>
-                        <button
-                          onClick={() => openShareModal(selectedBucketName)}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-amber-500/15 text-amber-300 text-xs font-semibold uppercase tracking-wide"
-                          title="Share / Unshare"
-                        >
-                          <Users className="w-3.5 h-3.5" />
-                          Share
-                        </button>
+                        {!isProtectedOutgoingBucket && (
+                          <button
+                            onClick={() => openShareModal(selectedBucketName)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-amber-500/15 text-amber-300 text-xs font-semibold uppercase tracking-wide"
+                            title="Share / Unshare"
+                          >
+                            <Users className="w-3.5 h-3.5" />
+                            Share
+                          </button>
+                        )}
                         <button
                           onClick={() => openPolicyModal(selectedBucketName)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-blue-500/15 text-blue-300 text-xs font-semibold uppercase tracking-wide"
@@ -770,14 +779,16 @@ const App = () => {
                           <Shield className="w-3.5 h-3.5" />
                           Policy
                         </button>
-                        <button
-                          onClick={() => handleDeleteBucket(selectedBucketName)}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-red-500/15 text-red-300 text-xs font-semibold uppercase tracking-wide"
-                          title="Delete Bucket"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          Delete
-                        </button>
+                        {!isProtectedOutgoingBucket && (
+                          <button
+                            onClick={() => handleDeleteBucket(selectedBucketName)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-red-500/15 text-red-300 text-xs font-semibold uppercase tracking-wide"
+                            title="Delete Bucket"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Delete
+                          </button>
+                        )}
                         <button
                           disabled
                           className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-slate-500 text-xs font-semibold uppercase tracking-wide cursor-not-allowed"
@@ -834,10 +845,12 @@ const App = () => {
                     <p className="text-sm text-slate-500">No owned buckets yet.</p>
                   ) : ownedBuckets.map((bucket) => (
                     <div key={`owned-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
-                      <span className="font-medium">{bucket.bucketName}</span>
+                      <span className="font-medium">{bucket.displayName || bucket.bucketName}</span>
                       <div className="flex items-center gap-2">
                         <button onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
-                        <button onClick={() => openShareModal(bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300">Manage Shares</button>
+                        {bucket.displayName !== MY_OUTGOING_CONTRACTS && (
+                          <button onClick={() => openShareModal(bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300">Manage Shares</button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -851,7 +864,7 @@ const App = () => {
                     <div key={`shared-${bucket.bucketName}`} className="flex items-center justify-between px-3 py-2 rounded-lg border border-premium-border bg-premium-card/40">
                       <div className="flex items-center gap-2">
                         <Share2 className="w-4 h-4 text-amber-400" />
-                        <span className="font-medium">{bucket.bucketName}</span>
+                        <span className="font-medium">{bucket.displayName || bucket.bucketName}</span>
                       </div>
                       <button onClick={() => navigateToBucketObjectsView(bucket.id, bucket.bucketName)} className="px-3 py-1.5 text-xs rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300">Open</button>
                     </div>

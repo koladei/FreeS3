@@ -76,6 +76,10 @@ export const storageApi = {
   acknowledgeShare: (name) => s3Api.post(`/buckets/${name}/shares/acknowledge`),
   shareBucketWithEmail: (name, email, permission, expiresAt = null) => s3Api.post(`/buckets/${name}/shares`, { email, permission, expiresAt }),
   unshareBucketWithEmail: (name, email) => s3Api.delete(`/buckets/${name}/shares`, { params: { email } }),
+  listObjectShares: (name, key) => s3Api.get(`/buckets/${name}/object-shares`, { params: { key } }),
+  listIncomingObjectShares: () => s3Api.get('/buckets/object-shares/incoming'),
+  shareObjectWithEmail: (name, key, email, expiresAt = null) => s3Api.post(`/buckets/${name}/object-shares`, { key, email, expiresAt }),
+  unshareObjectWithEmail: (name, key, email) => s3Api.delete(`/buckets/${name}/object-shares`, { params: { key, email } }),
   
   // Policies
   getBucketPolicy: (name) => s3Api.get(`/buckets/${name}/policy`),

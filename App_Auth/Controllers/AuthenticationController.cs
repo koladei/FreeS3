@@ -60,6 +60,23 @@ public class AuthController : ControllerBase
             return BadRequest(result.Errors);
         }
 
+        var outgoingBucketName = StorageSystemBuckets.GetMyOutgoingContractsInternalName(user.Id);
+        var existingBucket = await _context.StorageBuckets.FirstOrDefaultAsync(x => x.BucketName == outgoingBucketName);
+        if (existingBucket == null)
+        {
+            _context.StorageBuckets.Add(new StorageBucket
+            {
+                BucketName = outgoingBucketName,
+                OwnerId = user.Id,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                ObjectCount = 0,
+                TotalSizeBytes = 0
+            });
+
+            await _context.SaveChangesAsync();
+        }
+
         return Ok();
     }
 

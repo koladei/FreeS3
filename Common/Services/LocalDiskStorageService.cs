@@ -45,6 +45,12 @@ public class LocalDiskStorageService : IStorageService
         return EnsureBucketMetadataAsync(bucketName, ownerId: ownerId);
     }
 
+    private async Task EnsureMyOutgoingContractsBucketAsync(string userId)
+    {
+        var internalName = StorageSystemBuckets.GetMyOutgoingContractsInternalName(userId);
+        await EnsureBucketExistsAsync(internalName, userId);
+    }
+
     public async Task UploadObjectAsync(string userId, string bucketName, string key, Stream data, string contentType)
     {
         var ownerId = await ResolveBucketOwnerIdAsync(bucketName);
@@ -130,10 +136,15 @@ public class LocalDiskStorageService : IStorageService
                 || x.Bucket.Shares.Any(s =>
                     s.SharedWithUserId == userId
                     && s.AcknowledgedAt != null
+                    && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow))
+                || x.Shares.Any(s =>
+                    s.SharedWithUserId == userId
                     && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow))));
 
     public async Task<IEnumerable<string>> ListBucketsAsync(string userId)
     {
+        await EnsureMyOutgoingContractsBucketAsync(userId);
+
         var userBuckets = await _dbContext.StorageBuckets
             .Where(x => x.OwnerId == userId)
             .OrderBy(x => x.BucketName)
@@ -145,7 +156,9 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task<IEnumerable<BucketAccessMetadata>> ListAccessibleBucketsAsync(string userId)
     {
-        var buckets = await _dbContext.StorageBuckets
+        await EnsureMyOutgoingContractsBucketAsync(userId);
+
+        var rawBuckets = await _dbContext.StorageBuckets
             .AsNoTracking()
             .Where(x => x.OwnerId == userId || x.Shares.Any(s =>
                 s.SharedWithUserId == userId
@@ -154,6 +167,7 @@ public class LocalDiskStorageService : IStorageService
             .OrderBy(x => x.BucketName)
             .Select(x => new BucketAccessMetadata(
                 x.Id,
+                x.BucketName,
                 x.BucketName,
                 x.OwnerId == userId ? "owned" : "shared",
                 x.OwnerId == userId,
@@ -167,6 +181,10 @@ public class LocalDiskStorageService : IStorageService
                         .Select(s => s.Permission)
                         .FirstOrDefault()))
             .ToListAsync();
+
+        var buckets = rawBuckets
+            .Select(x => x with { DisplayName = StorageSystemBuckets.ToDisplayName(x.BucketName) })
+            .ToList();
 
         return buckets;
     }
@@ -227,6 +245,11 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task DeleteBucketAsync(string userId, string bucketName)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(bucketName))
+        {
+            throw new InvalidOperationException($"'{StorageSystemBuckets.MyOutgoingContracts}' bucket cannot be deleted.");
+        }
+
         var ownerId = await ResolveBucketOwnerIdAsync(bucketName)
             ?? throw new DirectoryNotFoundException($"Bucket '{bucketName}' does not exist.");
 
@@ -287,12 +310,34 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task<bool> UserHasAccessToBucketAsync(string bucketName, string userId)
     {
+        await EnsureMyOutgoingContractsBucketAsync(userId);
+
         return await _dbContext.StorageBuckets.AnyAsync(x =>
             x.BucketName == bucketName
             && (x.OwnerId == userId || x.Shares.Any(s =>
                 s.SharedWithUserId == userId
                 && s.AcknowledgedAt != null
                 && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow))));
+    }
+
+    public async Task<bool> UserHasAccessToObjectAsync(string bucketName, string key, string userId)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        return await _dbContext.StorageObjects.AnyAsync(x =>
+            x.BucketName == bucketName
+            && x.ObjectKey == key
+            && x.Bucket != null
+            && (
+                x.Bucket.OwnerId == userId
+                || x.Bucket.Shares.Any(s =>
+                    s.SharedWithUserId == userId
+                    && s.AcknowledgedAt != null
+                    && (s.ExpiresAt == null || s.ExpiresAt > now))
+                || x.Shares.Any(s =>
+                    s.SharedWithUserId == userId
+                    && (s.ExpiresAt == null || s.ExpiresAt > now))
+            ));
     }
 
     public async Task<bool> CanUploadToBucketAsync(string bucketName, string userId)
@@ -322,6 +367,11 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task<bool> ShareBucketWithUserByEmailAsync(string ownerUserId, string bucketName, string targetEmail, string permission, DateTimeOffset? expiresAt = null)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(bucketName))
+        {
+            return false;
+        }
+
         if (expiresAt.HasValue && expiresAt.Value <= DateTimeOffset.UtcNow)
         {
             return false;
@@ -391,6 +441,11 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task<bool> UnshareBucketWithUserByEmailAsync(string ownerUserId, string bucketName, string targetEmail)
     {
+        if (StorageSystemBuckets.IsMyOutgoingContracts(bucketName))
+        {
+            return false;
+        }
+
         var normalizedEmail = targetEmail.Trim().ToUpperInvariant();
         var ownerMatches = await UserOwnsBucketAsync(bucketName, ownerUserId);
         if (!ownerMatches)
@@ -484,6 +539,138 @@ public class LocalDiskStorageService : IStorageService
         }
 
         return true;
+    }
+
+    public async Task<bool> ShareObjectWithUserByEmailAsync(string ownerUserId, string bucketName, string objectKey, string targetEmail, DateTimeOffset? expiresAt = null)
+    {
+        if (expiresAt.HasValue && expiresAt.Value <= DateTimeOffset.UtcNow)
+        {
+            return false;
+        }
+
+        var ownerMatches = await UserOwnsBucketAsync(bucketName, ownerUserId);
+        if (!ownerMatches)
+        {
+            return false;
+        }
+
+        var normalizedEmail = targetEmail.Trim().ToUpperInvariant();
+        var targetUser = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.NormalizedEmail == normalizedEmail);
+
+        if (targetUser == null || targetUser.Id == ownerUserId)
+        {
+            return false;
+        }
+
+        var storageObject = await _dbContext.StorageObjects
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.BucketName == bucketName && x.ObjectKey == objectKey);
+
+        if (storageObject == null)
+        {
+            return false;
+        }
+
+        var existingShare = await _dbContext.ObjectShares.FirstOrDefaultAsync(x =>
+            x.StorageObjectId == storageObject.Id && x.SharedWithUserId == targetUser.Id);
+
+        if (existingShare != null)
+        {
+            existingShare.ExpiresAt = expiresAt;
+            existingShare.CreatedAt = DateTimeOffset.UtcNow;
+            await _dbContext.SaveChangesAsync();
+            return true;
+        }
+
+        _dbContext.ObjectShares.Add(new ObjectShare
+        {
+            StorageObjectId = storageObject.Id,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            SharedByUserId = ownerUserId,
+            SharedWithUserId = targetUser.Id,
+            CreatedAt = DateTimeOffset.UtcNow,
+            ExpiresAt = expiresAt
+        });
+
+        await _dbContext.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> UnshareObjectWithUserByEmailAsync(string ownerUserId, string bucketName, string objectKey, string targetEmail)
+    {
+        var ownerMatches = await UserOwnsBucketAsync(bucketName, ownerUserId);
+        if (!ownerMatches)
+        {
+            return false;
+        }
+
+        var normalizedEmail = targetEmail.Trim().ToUpperInvariant();
+        var targetUser = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.NormalizedEmail == normalizedEmail);
+
+        if (targetUser == null)
+        {
+            return false;
+        }
+
+        var share = await _dbContext.ObjectShares.FirstOrDefaultAsync(x =>
+            x.BucketName == bucketName && x.ObjectKey == objectKey && x.SharedWithUserId == targetUser.Id);
+
+        if (share == null)
+        {
+            return false;
+        }
+
+        _dbContext.ObjectShares.Remove(share);
+        await _dbContext.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<IEnumerable<ObjectShareMetadata>> ListObjectSharesAsync(string ownerUserId, string bucketName, string objectKey)
+    {
+        var ownerMatches = await UserOwnsBucketAsync(bucketName, ownerUserId);
+        if (!ownerMatches)
+        {
+            return Enumerable.Empty<ObjectShareMetadata>();
+        }
+
+        var shares = await _dbContext.ObjectShares
+            .Where(x => x.BucketName == bucketName
+                && x.ObjectKey == objectKey
+                && x.SharedWithUser != null
+                && x.SharedWithUser.Email != null
+                && x.SharedWithUser.Email != string.Empty)
+            .OrderBy(x => x.SharedWithUser!.Email)
+            .Select(x => new ObjectShareMetadata(
+                x.SharedWithUser!.Email!,
+                x.CreatedAt,
+                x.ExpiresAt))
+            .ToListAsync();
+
+        return shares;
+    }
+
+    public async Task<IEnumerable<IncomingObjectShareMetadata>> ListIncomingObjectSharesAsync(string userId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var incoming = await _dbContext.ObjectShares
+            .AsNoTracking()
+            .Where(x => x.SharedWithUserId == userId && (x.ExpiresAt == null || x.ExpiresAt > now))
+            .OrderByDescending(x => x.CreatedAt)
+            .Select(x => new IncomingObjectShareMetadata(
+                x.StorageObject != null ? x.StorageObject.RouteId : Guid.Empty,
+                x.BucketName,
+                x.ObjectKey,
+                x.SharedByUser != null ? x.SharedByUser.Email ?? "Unknown" : "Unknown",
+                x.CreatedAt,
+                x.ExpiresAt))
+            .ToListAsync();
+
+        return incoming.Where(x => x.ObjectId != Guid.Empty);
     }
 
     private string GetBucketPath(string userId, string bucketName) =>
