@@ -18,7 +18,10 @@
 
 # Known services — keep in sync with all_services in build-docker.sh
 _build_docker_services=(
-  "S3Server"
+  "App_Gateway"
+  "App_Auth"
+  "App_Storage"
+  "App_Contract"
 )
 
 # ------------------------------------------------------------------

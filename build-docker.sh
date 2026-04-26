@@ -173,7 +173,10 @@ get_image_repository() {
 # All available microservices (service directories with Dockerfile)
 # Update this list as you add more services
 all_services=(
-  "S3Server"
+  "App_Gateway"
+  "App_Auth"
+  "App_Storage"
+  "App_Contract"
 )
 
 # Determine target services
