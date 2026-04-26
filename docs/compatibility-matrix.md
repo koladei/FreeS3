@@ -53,7 +53,7 @@
 ## Data Features
 | Capability | Status | Notes | Test Coverage |
 |---|---|---|---|
-| System Metadata Persistence | planned | Content-Type, Cache-Control, Content-Disposition, etc. | pending |
+| System Metadata Persistence | partial | Bucket/object metadata now persisted in DB (bucket policy, content-type, object size, object timestamps). Full header replay parity is still pending. | partial |
 | User Metadata (`x-amz-meta-*`) | planned | Case-insensitive keys, exact replay semantics | pending |
 | Object Versioning (Basic) | planned | Enable/suspend and latest/version retrieval | pending |
 | Range GET (single range) | partial | Basic range support exists in ASP.NET file streaming | partial |

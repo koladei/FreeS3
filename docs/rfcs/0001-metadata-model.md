@@ -88,6 +88,43 @@ Each object version record stores:
 - Milestone B: Wire PUT/GET/HEAD to schema
 - Milestone C: Add CopyObject metadata directive handling
 
-## 12. Open Questions
+## 12. Implementation Notes (2026-04-25)
+Current implementation persists bucket and object metadata in relational storage through `AppDbContext`:
+- `StorageBuckets`
+  - `bucketName` (PK)
+  - `createdAt`, `updatedAt`
+  - `policyJson`
+  - `objectCount`, `totalSizeBytes`
+- `StorageObjects`
+  - `id` (PK)
+  - `bucketName` (FK to `StorageBuckets`)
+  - `objectKey` (unique with `bucketName`)
+  - `sizeBytes`, `contentType`
+  - `createdAt`, `updatedAt`
+
+Operational behavior:
+- Bucket creation/deletion updates metadata tables.
+- Object upload and delete update object records and bucket aggregates.
+- Object listing performs metadata reconciliation for local-disk state vs DB state.
+- Bucket policy updates persist both file (`.policy.json`) and DB metadata (`policyJson`).
+
+### 12.1 Runtime Database Provider Choice
+`App_Storage` supports provider selection through config:
+- `DatabaseProvider = SqlServer` (default)
+- `DatabaseProvider = PostgreSql`
+
+Required config keys:
+- `ConnectionStrings:DefaultConnection`
+- `DatabaseProvider`
+
+Example SQL Server connection string:
+`Server=localhost;Database=Escrow;User Id=sa;Password=...;Encrypt=True;TrustServerCertificate=True;`
+
+Example PostgreSQL connection string:
+`Host=localhost;Port=5432;Database=escrow;Username=postgres;Password=...`
+
+For PostgreSQL deployments, the runtime must include the Npgsql EF provider assembly (`Npgsql.EntityFrameworkCore.PostgreSQL`) so `UseNpgsql` can be activated.
+
+## 13. Open Questions
 - Preferred backing store for metadata (SQL vs embedded KV vs external strongly consistent store)
 - Version ID generation format for deterministic testing
