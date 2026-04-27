@@ -17,6 +17,7 @@ import {
   MousePointer,
   Edit3,
   Info,
+  Lock,
 } from 'lucide-react';
 import { storageApi } from './api';
 
@@ -689,7 +690,7 @@ import { storageApi } from './api';
 
 // ─── Signing Tab ──────────────────────────────────────────────────────────────
 
-function SigningTab({ template }) {
+function SigningTab({ template, signingContext }) {
   const EMPTY_SIGNER = {
     signerId: '',
     role: '',
@@ -698,7 +699,11 @@ function SigningTab({ template }) {
     routingOrder: 1,
   };
 
-  const [phase, setPhase] = useState('setup');
+  // signingContext = { instanceId, signerId, canEdit } when opened from Incoming Contracts
+  const isIncomingSigner = !!signingContext;
+  const canEditAsSigner = !isIncomingSigner || !!signingContext?.canEdit;
+
+  const [phase, setPhase] = useState(isIncomingSigner ? 'signing' : 'setup');
   const [instanceName, setInstanceName] = useState(`${template.title} - Signature Packet`);
   const [signers, setSigners] = useState([{ ...EMPTY_SIGNER }]);
   const [instance, setInstance] = useState(null);
@@ -708,15 +713,60 @@ function SigningTab({ template }) {
   const [finalizing, setFinalizing] = useState(false);
   const [finalized, setFinalized] = useState(null);
   const [error, setError] = useState(null);
-  const [currentSignerId, setCurrentSignerId] = useState('');
+  const [currentSignerId, setCurrentSignerId] = useState(signingContext?.signerId ?? '');
+  const [loadingContext, setLoadingContext] = useState(isIncomingSigner);
+
+  // When opened as an existing signer, load the instance and its signers
+  useEffect(() => {
+    if (!isIncomingSigner) return;
+    storageApi.getContractInstance(signingContext.instanceId)
+      .then((r) => {
+        const inst = r.data;
+        setInstance(inst);
+        if (inst.signers?.length) {
+          setSigners(inst.signers.map((s) => ({
+            signerId: s.signerId,
+            role: s.role,
+            displayName: s.displayName,
+            email: s.email ?? '',
+            routingOrder: s.routingOrder,
+          })));
+        }
+        // Use the provided signerId, or auto-select the first signer if none provided
+        const resolvedSignerId = signingContext.signerId
+          ?? inst.signers?.[0]?.signerId
+          ?? '';
+        setCurrentSignerId(resolvedSignerId);
+      })
+      .catch(() => setError('Could not load contract instance.'))
+      .finally(() => setLoadingContext(false));
+  }, [isIncomingSigner]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (phase === 'signing' && instance) {
+    if (phase === 'signing' && instance && !loadingContext) {
       storageApi.listContractPlaceholders(template.templateId)
         .then((r) => setPlaceholders(r.data))
         .catch(() => setError('Could not load fields.'));
     }
-  }, [phase, instance, template.templateId]);
+  }, [phase, instance, loadingContext, template.templateId]);
+
+  useEffect(() => {
+    if (!instance || placeholders.length === 0 || !currentSignerId) {
+      return;
+    }
+
+    const existingValues = {};
+    placeholders.forEach((placeholder) => {
+      const submitted = instance.fieldValues?.find(
+        (value) => value.placeholderId === placeholder.placeholderId && value.signerId === currentSignerId
+      );
+      if (submitted) {
+        existingValues[placeholder.placeholderId] = submitted.signatureData ?? submitted.value ?? '';
+      }
+    });
+
+    setFieldValues((prev) => ({ ...existingValues, ...prev }));
+  }, [currentSignerId, instance, placeholders]);
 
   const addSigner = () =>
     setSigners((s) => [...s, { ...EMPTY_SIGNER, routingOrder: s.length + 1 }]);
@@ -752,6 +802,7 @@ function SigningTab({ template }) {
   };
 
   const handleSubmitField = async (placeholderId) => {
+    if (!canEditAsSigner) { setError('You do not have permission to edit fields for this step.'); return; }
     if (!currentSignerId) { setError('Select which signer is filling this field.'); return; }
     const value = fieldValues[placeholderId] ?? '';
     const placeholder = placeholders.find((p) => p.placeholderId === placeholderId);
@@ -773,6 +824,64 @@ function SigningTab({ template }) {
     }
   };
 
+  const getSubmittedValue = (placeholderId, signerId = currentSignerId) =>
+    instance?.fieldValues?.find(
+      (value) => value.placeholderId === placeholderId && value.signerId === signerId
+    ) ?? null;
+
+  const currentSigner = signers.find((signer) => signer.signerId === currentSignerId) ?? null;
+  const currentSignerRole = currentSigner?.role ?? null;
+  const sortedPlaceholders = [...placeholders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const assignedPlaceholders = currentSignerRole
+    ? sortedPlaceholders.filter((placeholder) => placeholder.role === currentSignerRole)
+    : [];
+  const pendingAssignedPlaceholders = assignedPlaceholders.filter(
+    (placeholder) => !getSubmittedValue(placeholder.placeholderId)
+  );
+
+  const handleSubmitAssignedFields = async () => {
+    if (!canEditAsSigner) {
+      setError('You do not have permission to edit fields for this step.');
+      return;
+    }
+
+    if (!currentSignerId) {
+      setError('Could not determine which signer is filling the contract.');
+      return;
+    }
+
+    if (pendingAssignedPlaceholders.length === 0) {
+      return;
+    }
+
+    const missingRequired = pendingAssignedPlaceholders.find((placeholder) => {
+      if (!placeholder.required) {
+        return false;
+      }
+      const value = `${fieldValues[placeholder.placeholderId] ?? ''}`.trim();
+      return value.length === 0;
+    });
+
+    if (missingRequired) {
+      setError(`Fill the required field "${missingRequired.label}" before submitting.`);
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      for (const placeholder of pendingAssignedPlaceholders) {
+        await handleSubmitField(placeholder.placeholderId);
+      }
+      const updated = await storageApi.getContractInstance(instance.instanceId);
+      setInstance(updated.data);
+    } catch (err) {
+      setError(err.response?.data || 'Failed to submit your fields.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleFinalize = async () => {
     setFinalizing(true);
     setError(null);
@@ -789,7 +898,15 @@ function SigningTab({ template }) {
     }
   };
 
-  // ── finalized state ──
+  if (loadingContext) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
+        <span className="ml-3 text-sm text-slate-400">Loading contract…</span>
+      </div>
+    );
+  }
+
   if (finalized) {
     return (
       <div className="flex flex-col items-center justify-center py-10 space-y-4 text-center">
@@ -810,104 +927,175 @@ function SigningTab({ template }) {
     );
   }
 
-  // ── signing phase ──
   if (phase === 'signing' && instance) {
     return (
-      <div className="space-y-5">
-        {/* instance info */}
-        <div className="bg-premium-card rounded-xl border border-premium-border p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="font-semibold text-white">{instance.name}</span>
+      <div className="flex flex-col gap-4 h-full min-h-[620px]">
+        <div className="bg-premium-card rounded-xl border border-premium-border p-4 space-y-3 flex-shrink-0">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <p className="font-semibold text-white">{instance.name}</p>
+              <p className="text-xs text-slate-500 font-mono">{instance.instanceId}</p>
+            </div>
             <Badge color={instance.readyForFinalization ? 'green' : 'amber'}>
               {instance.status}
             </Badge>
           </div>
-          <p className="text-xs text-slate-500 font-mono">{instance.instanceId}</p>
-        </div>
 
-        {/* signer switcher */}
-        <div>
-          <label className={labelCls}>Signing as</label>
-          <select
-            className={inputCls}
-            value={currentSignerId}
-            onChange={(e) => setCurrentSignerId(e.target.value)}
-          >
-            {signers.map((s) => (
-              <option key={s.signerId} value={s.signerId}>
-                {s.displayName} ({s.role})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* field list */}
-        <div className="space-y-3">
-          {placeholders.length === 0 && (
-            <p className="text-sm text-slate-500 italic text-center py-4">
-              No placeholders defined. Go to the Placeholders tab to add fields first.
-            </p>
-          )}
-          {placeholders.map((p) => {
-            const isMine = signers.find((s) => s.signerId === currentSignerId && s.role === p.role);
-            const submitted = instance.fieldValues?.some(
-              (fv) => fv.placeholderId === p.placeholderId && fv.signerId === currentSignerId
-            );
-
-            return (
-              <div
-                key={p.placeholderId}
-                className={`rounded-xl border p-4 space-y-2 transition-all ${
-                  submitted ? 'border-emerald-500/30 bg-emerald-600/5' : 'border-premium-border bg-premium-card'
-                }`}
-              >
-                <div className="flex items-center gap-2 justify-between">
-                  <div className="flex items-center gap-2">
-                    <FieldTypeIcon type={p.fieldType} className="w-4 h-4 text-blue-400" />
-                    <span className="font-medium text-sm text-slate-200">{p.label}</span>
-                    {p.required && <Badge color="red">Required</Badge>}
-                    <Badge color="amber">Role: {p.role}</Badge>
-                  </div>
-                  {submitted && (
-                    <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                  )}
-                </div>
-
-                {isMine && !submitted && (
-                  <FieldInput
-                    placeholder={p}
-                    value={fieldValues[p.placeholderId] ?? ''}
-                    onChange={(v) => setFieldValues((fv) => ({ ...fv, [p.placeholderId]: v }))}
-                    onSubmit={() => handleSubmitField(p.placeholderId)}
-                  />
-                )}
-
-                {!isMine && (
-                  <p className="text-xs text-slate-600 italic">
-                    Assigned to role: <span className="text-slate-500 font-semibold">{p.role}</span> — switch signer above to fill.
-                  </p>
-                )}
+          <div>
+            <label className={labelCls}>Signing as</label>
+            {isIncomingSigner ? (
+              <div className={`${inputCls} flex items-center gap-2 cursor-default select-none opacity-80`}>
+                <span className="flex-1">
+                  {currentSigner?.displayName ?? currentSignerId}
+                  {' '}({currentSigner?.role ?? ''})
+                </span>
+                <Lock className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
               </div>
-            );
-          })}
+            ) : (
+              <select
+                className={inputCls}
+                value={currentSignerId}
+                onChange={(e) => setCurrentSignerId(e.target.value)}
+              >
+                {signers.map((s) => (
+                  <option key={s.signerId} value={s.signerId}>
+                    {s.displayName} ({s.role})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
 
-        {error && (
-          <p className="text-xs text-red-400 flex items-center gap-1.5">
-            <AlertCircle className="w-3.5 h-3.5" />{error}
-          </p>
-        )}
+        <div className="flex gap-4 flex-1 min-h-0">
+          <div className="flex-1 relative rounded-xl overflow-hidden border border-premium-border bg-[#08090b] min-h-[540px]">
+            <iframe
+              title="Contract Document"
+              src={storageApi.getDownloadUrl(template.bucket, template.objectKey)}
+              className="w-full h-full border-0"
+            />
 
-        <div className="flex justify-end pt-1">
-          <button
-            onClick={handleFinalize}
-            disabled={finalizing || !instance.readyForFinalization}
-            title={!instance.readyForFinalization ? 'Fill all required fields first' : 'Finalize and apply digital signature'}
-            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm transition-all flex items-center gap-2 shadow-lg shadow-emerald-500/20"
-          >
-            {finalizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-            Finalize Contract
-          </button>
+            <div className="absolute inset-0 pointer-events-none">
+              {sortedPlaceholders.map((placeholder) => {
+                const submittedValue = getSubmittedValue(placeholder.placeholderId);
+                const isAssignedToCurrentSigner = !!currentSignerRole && placeholder.role === currentSignerRole;
+                const displayValue = submittedValue?.signatureData ?? submittedValue?.value ?? fieldValues[placeholder.placeholderId] ?? '';
+                const isSubmitted = !!submittedValue;
+                const isSignature = placeholder.fieldType === 'signature' || placeholder.fieldType === 'initials';
+
+                return (
+                  <div
+                    key={placeholder.placeholderId}
+                    style={{
+                      position: 'absolute',
+                      left: Number(placeholder.x) || 0,
+                      top: Number(placeholder.y) || 0,
+                      width: Math.max(MIN_BOX_WIDTH, Number(placeholder.width) || MIN_BOX_WIDTH),
+                      height: Math.max(MIN_BOX_HEIGHT, Number(placeholder.height) || MIN_BOX_HEIGHT),
+                    }}
+                    className="pointer-events-auto"
+                  >
+                    <div className={`absolute -top-6 left-0 flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider shadow-sm ${
+                      isSubmitted
+                        ? 'border-emerald-500/40 bg-emerald-600/20 text-emerald-300'
+                        : isAssignedToCurrentSigner
+                          ? 'border-blue-500/40 bg-blue-600/20 text-blue-300'
+                          : 'border-slate-700 bg-slate-900/80 text-slate-400'
+                    }`}>
+                      <FieldTypeIcon type={placeholder.fieldType} className="w-3 h-3" />
+                      <span className="truncate max-w-[160px]">{placeholder.label}</span>
+                    </div>
+
+                    {isAssignedToCurrentSigner && !isSubmitted && canEditAsSigner && (
+                      <InlineSigningField
+                        placeholder={placeholder}
+                        value={fieldValues[placeholder.placeholderId] ?? ''}
+                        onChange={(value) => setFieldValues((prev) => ({ ...prev, [placeholder.placeholderId]: value }))}
+                      />
+                    )}
+
+                    {isAssignedToCurrentSigner && isSubmitted && (
+                      <div className="w-full h-full rounded-lg border border-emerald-500/40 bg-emerald-600/15 text-emerald-100 px-2 py-1.5 text-xs overflow-hidden">
+                        <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                          <CheckCircle className="w-3 h-3" /> Submitted
+                        </div>
+                        <div className={`${isSignature ? 'font-signature text-lg leading-tight' : 'leading-tight'} truncate`}>
+                          {displayValue || 'Completed'}
+                        </div>
+                      </div>
+                    )}
+
+                    {(!isAssignedToCurrentSigner || !canEditAsSigner) && (
+                      <div className="w-full h-full rounded-lg border border-slate-700/80 bg-slate-950/65 text-slate-500 px-2 py-1.5 text-[11px] flex items-center justify-between gap-2 overflow-hidden">
+                        <span className="truncate">{isAssignedToCurrentSigner ? 'Locked until your turn' : placeholder.role}</span>
+                        {isSubmitted ? <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" /> : <Lock className="w-3.5 h-3.5 flex-shrink-0" />}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="w-80 flex-shrink-0 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
+            <div className="bg-premium-card border border-premium-border rounded-xl p-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Your fields</p>
+              {assignedPlaceholders.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No fields are assigned to your role in this document.</p>
+              ) : (
+                assignedPlaceholders.map((placeholder) => {
+                  const isSubmitted = !!getSubmittedValue(placeholder.placeholderId);
+                  return (
+                    <div
+                      key={placeholder.placeholderId}
+                      className={`rounded-xl border px-3 py-2 ${isSubmitted ? 'border-emerald-500/30 bg-emerald-600/5' : 'border-premium-border bg-premium-dark'}`}
+                    >
+                      <div className="flex items-center gap-2 justify-between">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FieldTypeIcon type={placeholder.fieldType} className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                          <span className="text-sm text-slate-200 truncate">{placeholder.label}</span>
+                        </div>
+                        {isSubmitted ? <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" /> : <Badge color="amber">Pending</Badge>}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {error && (
+              <p className="text-xs text-red-400 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5" />{error}
+              </p>
+            )}
+
+            <div className="bg-premium-card border border-premium-border rounded-xl p-4 space-y-3 mt-auto">
+              <p className="text-xs text-slate-500">
+                {canEditAsSigner
+                  ? 'Fill your assigned fields directly on the document, then submit them to advance the workflow.'
+                  : 'This contract is visible to you, but fields stay locked until the workflow reaches your step.'}
+              </p>
+              <button
+                type="button"
+                onClick={handleSubmitAssignedFields}
+                disabled={!canEditAsSigner || submitting || pendingAssignedPlaceholders.length === 0}
+                className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
+              >
+                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                {!canEditAsSigner ? 'Read Only Until Your Turn' : pendingAssignedPlaceholders.length === 0 ? 'All Your Fields Submitted' : 'Submit My Fields'}
+              </button>
+              <button
+                type="button"
+                onClick={handleFinalize}
+                disabled={!canEditAsSigner || finalizing || !instance.readyForFinalization}
+                title={!instance.readyForFinalization ? 'Fill all required fields first' : 'Finalize and apply digital signature'}
+                className="w-full px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+              >
+                {finalizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                Finalize Contract
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -1055,6 +1243,58 @@ function FieldInput({ placeholder: p, value, onChange, onSubmit }) {
   );
 }
 
+function InlineSigningField({ placeholder: p, value, onChange }) {
+  const isSignature = p.fieldType === 'signature' || p.fieldType === 'initials';
+  const frameCls = `w-full h-full rounded-lg border-2 ${TYPE_COLOR[p.fieldType] ?? TYPE_COLOR.text} bg-slate-950/85 shadow-lg overflow-hidden`;
+
+  if (p.fieldType === 'checkbox') {
+    return (
+      <label className={`${frameCls} flex items-center justify-center gap-2 px-2 cursor-pointer select-none`}>
+        <input
+          type="checkbox"
+          checked={value === 'true'}
+          onChange={(e) => onChange(e.target.checked ? 'true' : 'false')}
+          className="w-4 h-4 rounded accent-blue-500"
+        />
+        <span className="text-xs font-semibold text-slate-100">Check</span>
+      </label>
+    );
+  }
+
+  if (p.fieldType === 'date') {
+    return (
+      <input
+        type="date"
+        className={`${frameCls} px-2 text-xs text-slate-100 focus:outline-none`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  if (isSignature) {
+    return (
+      <textarea
+        className={`${frameCls} resize-none px-2 py-1 text-slate-100 focus:outline-none ${p.fieldType === 'signature' ? 'font-signature text-xl leading-tight' : 'font-signature text-lg leading-tight'}`}
+        placeholder={p.fieldType === 'initials' ? 'Type initials…' : 'Type your signature…'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      className={`${frameCls} px-2 text-sm text-slate-100 focus:outline-none`}
+      placeholder={p.label}
+      maxLength={p.maxLength ?? undefined}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 // ─── Row helper ───────────────────────────────────────────────────────────────
 
 function Row({ label, value, mono, truncate }) {
@@ -1073,10 +1313,11 @@ const TABS = [
   { id: 'sign',         label: 'Sign',         Icon: PenLine },
 ];
 
-export default function ContractManagerModal({ template, onClose }) {
-  const [activeTab, setActiveTab] = useState('placeholders');
+export default function ContractManagerModal({ template, onClose, signingContext }) {
+  const [activeTab, setActiveTab] = useState(signingContext ? 'sign' : 'placeholders');
 
-  const isEditor = activeTab === 'placeholders';
+  const availableTabs = signingContext ? TABS.filter((tab) => tab.id === 'sign') : TABS;
+  const isCanvasLayout = activeTab === 'placeholders' || activeTab === 'sign';
   const pdfUrl = storageApi.getDownloadUrl(template.bucket, template.objectKey);
 
   return (
@@ -1084,7 +1325,7 @@ export default function ContractManagerModal({ template, onClose }) {
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div
         className={`glass w-full rounded-2xl border border-premium-border shadow-2xl relative flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200 transition-all ${
-          isEditor ? 'max-w-6xl' : 'max-w-2xl'
+          isCanvasLayout ? 'max-w-6xl' : 'max-w-2xl'
         }`}
       >
         {/* header */}
@@ -1106,8 +1347,9 @@ export default function ContractManagerModal({ template, onClose }) {
         </div>
 
         {/* tabs */}
+        {availableTabs.length > 1 && (
         <div className="flex border-b border-premium-border flex-shrink-0">
-          {TABS.map(({ id, label, Icon }) => (
+          {availableTabs.map(({ id, label, Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
@@ -1123,14 +1365,15 @@ export default function ContractManagerModal({ template, onClose }) {
             </button>
           ))}
         </div>
+        )}
 
         {/* body — no scroll on placeholders tab so the editor fills the space */}
-        <div className={`flex-1 min-h-0 p-4 ${isEditor ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar p-6'}`}>
+        <div className={`flex-1 min-h-0 p-4 ${isCanvasLayout ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar p-6'}`}>
           {activeTab === 'placeholders' && (
             <PlaceholdersTab templateId={template.templateId} pdfUrl={pdfUrl} />
           )}
           {activeTab === 'sign' && (
-            <SigningTab template={template} />
+            <SigningTab template={template} signingContext={signingContext} />
           )}
         </div>
       </div>

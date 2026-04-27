@@ -39,7 +39,7 @@ public class LocalDiskStorageService : IStorageService
         {
             throw new ArgumentNullException(nameof(ownerId), "Owner ID is required to create a bucket.");
         }
-        
+
         var bucketPath = GetBucketPath(ownerId, bucketName);
         Directory.CreateDirectory(bucketPath);
         return EnsureBucketMetadataAsync(bucketName, ownerId: ownerId);
@@ -75,7 +75,7 @@ public class LocalDiskStorageService : IStorageService
 
         var now = DateTimeOffset.UtcNow;
         var fileInfo = new FileInfo(filePath);
-        
+
         // Get the bucket to obtain its ID
         var bucket = await _dbContext.StorageBuckets
             .FirstOrDefaultAsync(x => x.BucketName == bucketName);
@@ -208,6 +208,7 @@ public class LocalDiskStorageService : IStorageService
     public async Task<IEnumerable<S3ObjectMetadata>> ListObjectsAsync(string userId, string bucketName)
     {
         var objects = await _dbContext.StorageObjects
+            .AsNoTracking()
             .Where(x => x.BucketName == bucketName
                 && x.Bucket != null
                 && (x.Bucket.OwnerId == userId
@@ -216,15 +217,30 @@ public class LocalDiskStorageService : IStorageService
                         && s.AcknowledgedAt != null
                         && (s.ExpiresAt == null || s.ExpiresAt > DateTimeOffset.UtcNow))))
             .OrderBy(x => x.ObjectKey)
-            .Select(x => new S3ObjectMetadata(
+            .ToListAsync();
+
+        var objectKeys = objects.Select(x => x.ObjectKey).Distinct(StringComparer.Ordinal).ToList();
+        var workflowByObjectKey = await BuildWorkflowSummariesAsync(bucketName, objectKeys, userId);
+
+        return objects.Select(x =>
+        {
+            workflowByObjectKey.TryGetValue(x.ObjectKey, out var workflow);
+
+            return new S3ObjectMetadata(
                 x.RouteId,
                 x.ObjectKey,
                 x.SizeBytes,
                 x.UpdatedAt.UtcDateTime,
-                x.ContentType))
-            .ToListAsync();
-
-        return objects;
+                x.ContentType,
+                workflow?.TemplateId,
+                workflow?.InstanceId,
+                workflow?.Status,
+                workflow?.PendingOnSignerId,
+                workflow?.PendingOnDisplayName,
+                workflow?.PendingOnRole,
+                workflow?.IsSigningTurn ?? false,
+                workflow?.HasSigned ?? false);
+        }).ToList();
     }
 
     public async Task DeleteObjectAsync(string userId, string bucketName, string key)
@@ -677,24 +693,208 @@ public class LocalDiskStorageService : IStorageService
 
     public async Task<IEnumerable<IncomingObjectShareMetadata>> ListIncomingObjectSharesAsync(string userId)
     {
+        System.Diagnostics.Debug.WriteLine($"Listing incoming shares for user '{userId}' at {DateTimeOffset.UtcNow}");
         var now = DateTimeOffset.UtcNow;
-        var incoming = await _dbContext.ObjectShares
+        var incomingShares = await _dbContext.ObjectShares
             .AsNoTracking()
+            .Include(x => x.StorageObject)
             .Where(x => x.SharedWithUserId == userId && (x.ExpiresAt == null || x.ExpiresAt > now))
             .OrderByDescending(x => x.CreatedAt)
-            .Select(x => new IncomingObjectShareMetadata(
-                x.StorageObject != null ? x.StorageObject.RouteId : Guid.Empty,
-                x.BucketName,
-                x.ObjectKey,
-                x.SharedByUser != null ? x.SharedByUser.Email ?? "Unknown" : "Unknown",
-                x.CreatedAt,
-                x.ExpiresAt,
-                x.StorageObject != null ? x.StorageObject.SizeBytes : 0,
-                x.StorageObject != null ? x.StorageObject.UpdatedAt.UtcDateTime : DateTime.UtcNow,
-                x.StorageObject != null ? x.StorageObject.ContentType : "application/octet-stream"))
             .ToListAsync();
 
+        var validShares = incomingShares
+            .Where(x => x.StorageObject != null)
+            .ToList();
+
+        System.Console.WriteLine($"User '{userId}' has {incomingShares.Count} incoming shares at {DateTimeOffset.UtcNow}");
+
+        System.Console.WriteLine($"User '{userId}' has {validShares.Count} valid incoming shares at {DateTimeOffset.UtcNow}");
+
+        var workflowByObjectKey = await BuildWorkflowSummariesAsync(
+            bucketName: null,
+            objectKeys: null,
+            userId,
+            includePairs: validShares.Select(x => (x.BucketName, x.ObjectKey)).Distinct().ToList());
+
+        var incoming = validShares
+            .Select(x =>
+            {
+                var key = $"{x.BucketName}::{x.ObjectKey}";
+                workflowByObjectKey.TryGetValue(key, out var workflow);
+
+                return new IncomingObjectShareMetadata(
+                    x.StorageObject!.RouteId,
+                    x.BucketName,
+                    x.ObjectKey,
+                    x.SharedByUser != null ? x.SharedByUser.Email ?? "Unknown" : "Unknown",
+                    x.CreatedAt,
+                    x.ExpiresAt,
+                    x.StorageObject.SizeBytes,
+                    x.StorageObject.UpdatedAt.UtcDateTime,
+                    x.StorageObject.ContentType,
+                    workflow?.TemplateId,
+                    workflow?.InstanceId,
+                    workflow?.Status,
+                    workflow?.PendingOnSignerId,
+                    workflow?.PendingOnDisplayName,
+                    workflow?.PendingOnRole,
+                    workflow?.IsSigningTurn ?? false,
+                    workflow?.HasSigned ?? false);
+            })
+            .ToList();
+
         return incoming.Where(x => x.ObjectId != Guid.Empty);
+    }
+
+    private sealed record WorkflowSummary(
+        string TemplateId,
+        string? InstanceId,
+        string Status,
+        string? PendingOnSignerId,
+        string? PendingOnDisplayName,
+        string? PendingOnRole,
+        bool IsSigningTurn,
+        bool HasSigned);
+
+    private async Task<Dictionary<string, WorkflowSummary>> BuildWorkflowSummariesAsync(
+        string? bucketName,
+        IReadOnlyCollection<string>? objectKeys,
+        string userId,
+        IReadOnlyCollection<(string BucketName, string ObjectKey)>? includePairs = null)
+    {
+        // Load current user's identifiers so we can match them as a signer
+        // even when the signer entry used email or username instead of their DB ID.
+        var currentUser = await _dbContext.Users
+            .AsNoTracking()
+            .Where(x => x.Id == userId)
+            .Select(x => new { x.Id, x.Email, x.NormalizedEmail, x.NormalizedUserName })
+            .FirstOrDefaultAsync();
+
+        bool IsMeMatch(ContractSigner s) =>
+            string.Equals(s.SignerId, userId, StringComparison.Ordinal)
+            || (currentUser != null && (
+                (!string.IsNullOrWhiteSpace(s.Email)
+                    && !string.IsNullOrWhiteSpace(currentUser.NormalizedEmail)
+                    && string.Equals(s.Email.ToUpperInvariant(), currentUser.NormalizedEmail, StringComparison.Ordinal))
+                || (!string.IsNullOrWhiteSpace(s.SignerId)
+                    && !string.IsNullOrWhiteSpace(currentUser.NormalizedEmail)
+                    && string.Equals(s.SignerId.ToUpperInvariant(), currentUser.NormalizedEmail, StringComparison.Ordinal))
+                || (!string.IsNullOrWhiteSpace(s.SignerId)
+                    && !string.IsNullOrWhiteSpace(currentUser.NormalizedUserName)
+                    && string.Equals(s.SignerId.ToUpperInvariant(), currentUser.NormalizedUserName, StringComparison.Ordinal))
+            ));
+
+        var templatesQuery = _dbContext.ContractTemplates
+            .AsNoTracking()
+            .Include(x => x.Placeholders)
+            .Include(x => x.Instances)
+                .ThenInclude(i => i.Signers)
+            .Include(x => x.Instances)
+                .ThenInclude(i => i.FieldValues)
+            .AsQueryable();
+
+        if (includePairs is not { Count: > 0 })
+        {
+            if (!string.IsNullOrWhiteSpace(bucketName))
+            {
+                templatesQuery = templatesQuery.Where(t => t.Bucket == bucketName);
+            }
+
+            if (objectKeys is { Count: > 0 })
+            {
+                templatesQuery = templatesQuery.Where(t => objectKeys.Contains(t.ObjectKey));
+            }
+        }
+
+        var templates = await templatesQuery.ToListAsync();
+
+        if (includePairs is { Count: > 0 })
+        {
+            var includeSet = includePairs
+                .Select(p => $"{p.BucketName}::{p.ObjectKey}")
+                .ToHashSet(StringComparer.Ordinal);
+
+            templates = templates
+                .Where(t => includeSet.Contains($"{t.Bucket}::{t.ObjectKey}"))
+                .ToList();
+        }
+
+        var grouped = templates
+            .GroupBy(t => includePairs is { Count: > 0 } ? $"{t.Bucket}::{t.ObjectKey}" : t.ObjectKey, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(t => t.CreatedAt).First(),
+                StringComparer.Ordinal);
+
+        var result = new Dictionary<string, WorkflowSummary>(StringComparer.Ordinal);
+        foreach (var (key, template) in grouped)
+        {
+            var latestInstance = template.Instances
+                .OrderByDescending(i => i.CreatedAt)
+                .FirstOrDefault();
+
+            if (latestInstance is null)
+            {
+                result[key] = new WorkflowSummary(
+                    template.TemplateId,
+                    null,
+                    template.Status,
+                    null,
+                    null,
+                    null,
+                    false,
+                    false);
+                continue;
+            }
+
+            var requiredByRole = template.Placeholders
+                .Where(p => p.Required)
+                .GroupBy(p => p.Role, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Select(x => x.PlaceholderId).ToHashSet(StringComparer.Ordinal), StringComparer.OrdinalIgnoreCase);
+
+            bool IsSignerComplete(ContractSigner signer)
+            {
+                if (!requiredByRole.TryGetValue(signer.Role, out var placeholderIds) || placeholderIds.Count == 0)
+                {
+                    return true;
+                }
+
+                return placeholderIds.All(placeholderId => latestInstance.FieldValues.Any(v =>
+                    v.PlaceholderId == placeholderId
+                    && v.SignerId == signer.SignerId
+                    && (!string.IsNullOrWhiteSpace(v.Value) || !string.IsNullOrWhiteSpace(v.SignatureData))));
+            }
+
+            var pendingSigner = latestInstance.Signers
+                .OrderBy(s => s.RoutingOrder)
+                .ThenBy(s => s.DisplayName)
+                .FirstOrDefault(s => !IsSignerComplete(s));
+
+            var me = latestInstance.Signers.FirstOrDefault(IsMeMatch);
+            var meCompleted = me != null && IsSignerComplete(me);
+            var isMyTurn = me != null
+                && pendingSigner != null
+                && string.Equals(me.SignerId, pendingSigner.SignerId, StringComparison.Ordinal)
+                && !meCompleted;
+
+            var status = latestInstance.Status;
+            if (!string.Equals(latestInstance.Status, "Finalized", StringComparison.OrdinalIgnoreCase) && pendingSigner != null)
+            {
+                status = "PendingSignature";
+            }
+
+            result[key] = new WorkflowSummary(
+                template.TemplateId,
+                latestInstance.InstanceId,
+                status,
+                pendingSigner?.SignerId,
+                pendingSigner?.DisplayName,
+                pendingSigner?.Role,
+                isMyTurn,
+                meCompleted);
+        }
+
+        return result;
     }
 
     private string GetBucketPath(string userId, string bucketName) =>

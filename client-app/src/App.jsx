@@ -24,6 +24,7 @@ import {
   Share2,
   Users,
   Pencil,
+  PenLine,
 } from 'lucide-react';
 import { storageApi } from './api';
 import ContractManagerModal from './ContractManagerModal';
@@ -122,6 +123,7 @@ const App = () => {
   // map of objectKey -> contractTemplate (populated on upload or manual register)
   const [contractTemplates, setContractTemplates] = useState({});
   const [contractTarget, setContractTarget] = useState(null);
+  const [signingContext, setSigningContext] = useState(null); // { instanceId, signerId } for incoming-contract signing
 
   const navigateToAuthView = useCallback((view) => {
     const path = view === 'register' ? '/register' : '/login';
@@ -235,6 +237,16 @@ const App = () => {
       return;
     }
 
+    // Do not rewrite deep links before we know which buckets are accessible.
+    if (!bucketsLoaded) {
+      return;
+    }
+
+    const currentRoute = getAppRouteFromPath(window.location.pathname);
+    if ((currentRoute.kind === 'bucket' || currentRoute.kind === 'object') && !selectedBucketId) {
+      return;
+    }
+
     const targetPath = activeBucketView === 'all' || !selectedBucketId
       ? '/buckets'
       : selectedObjectId
@@ -244,7 +256,7 @@ const App = () => {
     if (window.location.pathname !== targetPath) {
       window.history.pushState({}, '', targetPath);
     }
-  }, [activeBucketView, currentView, isAuthenticated, selectedBucketId, selectedObjectId]);
+  }, [activeBucketView, bucketsLoaded, currentView, getAppRouteFromPath, isAuthenticated, selectedBucketId, selectedObjectId]);
 
   const fetchBuckets = async () => {
     try {
@@ -257,6 +269,16 @@ const App = () => {
         setSelectedBucketName(null);
         setActiveBucketView('all');
         return;
+      }
+
+      const route = getAppRouteFromPath(window.location.pathname);
+      if ((route.kind === 'bucket' || route.kind === 'object') && route.bucketId) {
+        const routedBucket = nextBuckets.find((bucket) => bucket.id === route.bucketId);
+        if (routedBucket) {
+          setSelectedBucketId(routedBucket.id);
+          setSelectedBucketName(routedBucket.bucketName);
+          return;
+        }
       }
 
       if (!selectedBucketId || !nextBuckets.some((bucket) => bucket.id === selectedBucketId)) {
@@ -304,6 +326,14 @@ const App = () => {
           lastModified: item.lastModified,
           contentType: item.contentType,
           sourceBucketName: item.bucketName,
+          contractTemplateId: item.contractTemplateId,
+          contractInstanceId: item.contractInstanceId,
+          contractStatus: item.contractStatus,
+          pendingOnSignerId: item.pendingOnSignerId,
+          pendingOnDisplayName: item.pendingOnDisplayName,
+          pendingOnRole: item.pendingOnRole,
+          isSigningTurn: item.isSigningTurn,
+          hasSigned: item.hasSigned,
         }));
         setObjects(virtualObjects);
         return;
@@ -549,8 +579,31 @@ const App = () => {
   };
 
   const openContractManager = (obj) => {
+    // Incoming contract: open directly in signing mode using the known templateId/instanceId
+    if (isVirtualIncomingBucket && obj.contractTemplateId && obj.contractInstanceId) {
+      const open = (tpl) => {
+        setSigningContext({
+          instanceId: obj.contractInstanceId,
+          signerId: user?.id ?? '',
+          canEdit: !!obj.isSigningTurn,
+        });
+        setContractTarget(tpl);
+      };
+      const cached = Object.values(contractTemplates).find(
+        (t) => t.templateId === obj.contractTemplateId
+      );
+      if (cached) {
+        open(cached);
+      } else {
+        storageApi.getContractTemplate(obj.contractTemplateId)
+          .then((r) => open(r.data))
+          .catch(() => alert('Could not load contract template.'));
+      }
+      return;
+    }
     const tpl = contractTemplates[obj.key];
     if (tpl) {
+      setSigningContext(null);
       setContractTarget(tpl);
     } else {
       handleRegisterContract(obj);
@@ -567,6 +620,18 @@ const App = () => {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const getContractStatusLabel = (obj) => {
+    if (!obj?.contractTemplateId) return null;
+    if (obj.contractStatus === 'Finalized') return 'Finalized';
+    if (obj.isSigningTurn) return 'Your turn to sign';
+    if (obj.hasSigned) return 'Signed by you';
+    if (obj.pendingOnDisplayName || obj.pendingOnRole) {
+      const who = [obj.pendingOnDisplayName, obj.pendingOnRole].filter(Boolean).join(' / ');
+      return `Pending on ${who}`;
+    }
+    return obj.contractStatus || 'In progress';
   };
 
   const getPreviewType = (contentType) => {
@@ -984,7 +1049,14 @@ const App = () => {
                               <div className="w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center">
                                 <File className="w-5 h-5 text-blue-400" />
                               </div>
-                              <span className="font-medium text-slate-200">{obj.displayKey || obj.key}</span>
+                              <div className="min-w-0">
+                                <span className="font-medium text-slate-200 block truncate">{obj.displayKey || obj.key}</span>
+                                {getContractStatusLabel(obj) && (
+                                  <span className={`text-[11px] font-semibold ${obj.isSigningTurn ? 'text-emerald-300' : obj.hasSigned ? 'text-blue-300' : 'text-amber-300'}`}>
+                                    {getContractStatusLabel(obj)}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </td>
                           <td className="px-6 py-4 text-sm text-slate-400">{formatSize(obj.size)}</td>
@@ -1039,6 +1111,15 @@ const App = () => {
                                   title="Delete"
                                 >
                                   <Trash2 className="w-4.5 h-4.5" />
+                                </button>
+                              )}
+                              {isVirtualIncomingBucket && obj.contractInstanceId && obj.contractStatus !== 'Finalized' && (
+                                <button
+                                  onClick={() => openContractManager(obj)}
+                                  className="p-2 rounded-lg transition-all hover:bg-emerald-500/10 hover:text-emerald-400 text-emerald-500"
+                                  title="Sign this contract"
+                                >
+                                  <PenLine className="w-4.5 h-4.5" />
                                 </button>
                               )}
                             </div>
@@ -1158,7 +1239,8 @@ const App = () => {
       {contractTarget && (
         <ContractManagerModal
           template={contractTarget}
-          onClose={() => setContractTarget(null)}
+          signingContext={signingContext}
+          onClose={() => { setContractTarget(null); setSigningContext(null); }}
         />
       )}
 

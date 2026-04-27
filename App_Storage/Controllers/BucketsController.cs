@@ -312,6 +312,7 @@ public class BucketsController : ControllerBase
     public async Task<ActionResult<IEnumerable<IncomingObjectShareMetadata>>> GetIncomingObjectShares()
     {
         var userId = GetUserId();
+        System.Console.WriteLine($"User '{userId}' is listing incoming object shares at {DateTimeOffset.UtcNow}");
         var shares = await _storage.ListIncomingObjectSharesAsync(userId);
         return Ok(shares);
     }

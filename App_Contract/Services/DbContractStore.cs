@@ -209,9 +209,128 @@ public sealed class DbContractStore : IContractStore
 
         template.Status = "InUse";
         _db.ContractInstances.Add(instance);
+
+        EnsureSignerObjectShares(template, instance);
         _db.SaveChanges();
 
         return ToInstanceDto(instance, template.Placeholders.ToList());
+    }
+
+    private void EnsureSignerObjectShares(ContractTemplate template, ContractInstance instance)
+    {
+        var storageObject = _db.StorageObjects
+            .AsNoTracking()
+            .FirstOrDefault(x => x.BucketName == template.Bucket && x.ObjectKey == template.ObjectKey);
+
+        if (storageObject is null)
+        {
+            return;
+        }
+
+        var sharedByUserId = template.AuthorId;
+        if (string.IsNullOrWhiteSpace(sharedByUserId))
+        {
+            sharedByUserId = _db.StorageBuckets
+                .Where(x => x.BucketName == template.Bucket)
+                .Select(x => x.OwnerId)
+                .FirstOrDefault();
+        }
+
+        if (string.IsNullOrWhiteSpace(sharedByUserId))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var targetUserIds = instance.Signers
+            .Select(ResolveSignerUserId)
+            .OfType<string>()
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var targetUserId in targetUserIds)
+        {
+            if (string.Equals(targetUserId, sharedByUserId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var existingShare = _db.ObjectShares
+                .FirstOrDefault(x => x.StorageObjectId == storageObject.Id && x.SharedWithUserId == targetUserId);
+
+            if (existingShare is null)
+            {
+                _db.ObjectShares.Add(new ObjectShare
+                {
+                    StorageObjectId = storageObject.Id,
+                    BucketName = storageObject.BucketName,
+                    ObjectKey = storageObject.ObjectKey,
+                    SharedByUserId = sharedByUserId,
+                    SharedWithUserId = targetUserId,
+                    CreatedAt = now,
+                    ExpiresAt = null,
+                });
+
+                continue;
+            }
+
+            existingShare.SharedByUserId = sharedByUserId;
+            existingShare.ExpiresAt = null;
+        }
+    }
+
+    private string? ResolveSignerUserId(ContractSigner signer)
+    {
+        if (!string.IsNullOrWhiteSpace(signer.SignerId))
+        {
+            var byId = _db.Users
+                .AsNoTracking()
+                .Where(x => x.Id == signer.SignerId)
+                .Select(x => x.Id)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(byId))
+            {
+                return byId;
+            }
+        }
+
+        var email = !string.IsNullOrWhiteSpace(signer.Email)
+            ? signer.Email
+            : (signer.SignerId.Contains('@') ? signer.SignerId : null);
+
+        if (!string.IsNullOrWhiteSpace(email))
+        {
+            var normalizedEmail = email.ToUpperInvariant();
+            var byEmail = _db.Users
+                .AsNoTracking()
+                .Where(x => x.NormalizedEmail == normalizedEmail)
+                .Select(x => x.Id)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(byEmail))
+            {
+                return byEmail;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(signer.SignerId))
+        {
+            var normalizedUserName = signer.SignerId.ToUpperInvariant();
+            var byUserName = _db.Users
+                .AsNoTracking()
+                .Where(x => x.NormalizedUserName == normalizedUserName)
+                .Select(x => x.Id)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(byUserName))
+            {
+                return byUserName;
+            }
+        }
+
+        return null;
     }
 
     public ContractInstanceDto? GetInstance(string instanceId)

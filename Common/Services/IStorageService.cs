@@ -32,9 +32,39 @@ public interface IStorageService
     Task<IEnumerable<IncomingObjectShareMetadata>> ListIncomingObjectSharesAsync(string userId);
 }
 
-public record S3ObjectMetadata(Guid Id, string Key, long Size, DateTime LastModified, string ContentType);
+public record S3ObjectMetadata(
+    Guid Id,
+    string Key,
+    long Size,
+    DateTime LastModified,
+    string ContentType,
+    string? ContractTemplateId = null,
+    string? ContractInstanceId = null,
+    string? ContractStatus = null,
+    string? PendingOnSignerId = null,
+    string? PendingOnDisplayName = null,
+    string? PendingOnRole = null,
+    bool IsSigningTurn = false,
+    bool HasSigned = false);
 public record BucketAccessMetadata(Guid Id, string BucketName, string DisplayName, string AccessType, bool IsOwner, string? OwnerEmail, string? SharePermission);
 public record BucketShareMetadata(string SharedWithEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, string Permission);
 public record IncomingBucketShareMetadata(string BucketName, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? AcknowledgedAt, DateTimeOffset? ExpiresAt, bool IsAcknowledged, string Permission);
 public record ObjectShareMetadata(string SharedWithEmail, DateTimeOffset SharedAt, DateTimeOffset? ExpiresAt);
-public record IncomingObjectShareMetadata(Guid ObjectId, string BucketName, string ObjectKey, string SharedByEmail, DateTimeOffset SharedAt, DateTimeOffset? ExpiresAt, long Size, DateTime LastModified, string ContentType);
+public record IncomingObjectShareMetadata(
+    Guid ObjectId,
+    string BucketName,
+    string ObjectKey,
+    string SharedByEmail,
+    DateTimeOffset SharedAt,
+    DateTimeOffset? ExpiresAt,
+    long Size,
+    DateTime LastModified,
+    string ContentType,
+    string? ContractTemplateId = null,
+    string? ContractInstanceId = null,
+    string? ContractStatus = null,
+    string? PendingOnSignerId = null,
+    string? PendingOnDisplayName = null,
+    string? PendingOnRole = null,
+    bool IsSigningTurn = false,
+    bool HasSigned = false);
